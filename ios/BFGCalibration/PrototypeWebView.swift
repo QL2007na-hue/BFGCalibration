@@ -1150,6 +1150,10 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
 
     private func handleStatus(_ status: String) {
         state["busyMessage"] = status
+        // Status lines are the only record of *how far* a run got. Without them
+        // an export shows the radio's chatter but not whether the client ever
+        // reached "已发现 …；正在连接…", which is the first thing worth knowing.
+        handleLog("[STATUS] " + status)
         pushState()
     }
 

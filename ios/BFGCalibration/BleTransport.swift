@@ -53,6 +53,12 @@ final class CoreBluetoothTransport: NSObject, BFGCore.BleTransport {
     /// is dropped if it is handed over all at once.
     private var pending: [Data] = []
     private var writeInFlight = false
+    /// Service discovery gets more than one attempt: the first discovery on a
+    /// freshly connected peripheral is exactly where a single silent ATT request
+    /// leaves the rider with nothing but a spinner.
+    private var discoveryRetry: DispatchWorkItem?
+    private var servicesDiscovered = false
+    private var discoveryAttempts = 0
 
     override init() {
         super.init()
@@ -102,6 +108,30 @@ final class CoreBluetoothTransport: NSObject, BFGCore.BleTransport {
         }
     }
 
+    /// Asks for the whole service table, not just the Nordic UART UUID.
+    ///
+    /// The original called `g.discoverServices()` with no filter. Filtering is
+    /// the one thing that can turn "this vehicle says something unexpected" into
+    /// "nothing came back at all", so the table is requested in full and the log
+    /// records it. A silent attempt is retried while the client's own timeout
+    /// still has room.
+    private func startServiceDiscovery() {
+        guard connected, let peripheral else { return }
+        discoveryAttempts += 1
+        servicesDiscovered = false
+        log("BLE_DISCOVER_SERVICES attempt=\(discoveryAttempts)")
+        peripheral.discoverServices(nil)
+        discoveryRetry?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.connected, !self.servicesDiscovered,
+                  self.discoveryAttempts < 3 else { return }
+            self.log("BLE_DISCOVER_SERVICES 第 \(self.discoveryAttempts) 次没有回调，重试")
+            self.startServiceDiscovery()
+        }
+        discoveryRetry = item
+        queue.asyncAfter(deadline: .now() + 3, execute: item)
+    }
+
     func disconnect() {
         queue.async { [weak self] in
             guard let self else { return }
@@ -114,6 +144,10 @@ final class CoreBluetoothTransport: NSObject, BFGCore.BleTransport {
             self.pending = []
             self.writeInFlight = false
             self.connected = false
+            self.servicesDiscovered = false
+            self.discoveryAttempts = 0
+            self.discoveryRetry?.cancel()
+            self.discoveryRetry = nil
         }
     }
 
@@ -196,7 +230,7 @@ extension CoreBluetoothTransport: CBCentralManagerDelegate {
         connected = true
         log("BLE_CONNECTED name=\(peripheral.name ?? "(空)")")
         delegate?.bleTransportDidConnect()
-        peripheral.discoverServices([CoreBluetoothTransport.serviceUUID])
+        startServiceDiscovery()
     }
 
     func centralManager(_ central: CBCentralManager,
@@ -213,6 +247,10 @@ extension CoreBluetoothTransport: CBCentralManagerDelegate {
         writeType = nil
         pending = []
         writeInFlight = false
+        servicesDiscovered = false
+        discoveryAttempts = 0
+        discoveryRetry?.cancel()
+        discoveryRetry = nil
         log("BLE_DISCONNECTED \(error.map { "err=\($0.localizedDescription)" } ?? "err=nil")")
         delegate?.bleTransport(didDisconnect: error)
     }
@@ -220,19 +258,26 @@ extension CoreBluetoothTransport: CBCentralManagerDelegate {
 
 extension CoreBluetoothTransport: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        servicesDiscovered = true
+        discoveryRetry?.cancel()
         guard error == nil else {
             log("BLE_SERVICES err=\(error!.localizedDescription)")
             delegate?.bleTransport(didDiscoverServices: error)
             return
         }
+        // The whole table goes into the log. A vehicle carrying something other
+        // than the Nordic UART service is exactly the case a filter hides, and it
+        // is indistinguishable from "no reply" without this line.
+        let discovered = (peripheral.services ?? []).map { $0.uuid.uuidString }
+        log("BLE_SERVICES 共 \(discovered.count) 个：\(discovered.joined(separator: ","))")
         guard let service = peripheral.services?.first(where: { $0.uuid == CoreBluetoothTransport.serviceUUID })
         else {
             log("BLE_SERVICES 未找到 6E400001")
             delegate?.bleTransport(didDiscoverServices: BleError.serviceNotFound)
             return
         }
-        log("BLE_SERVICES ok")
-        peripheral.discoverCharacteristics([CoreBluetoothTransport.txUUID, CoreBluetoothTransport.rxUUID], for: service)
+        // Unfiltered for the same reason as the services above.
+        peripheral.discoverCharacteristics(nil, for: service)
     }
 
     func peripheral(_ peripheral: CBPeripheral,
@@ -242,6 +287,10 @@ extension CoreBluetoothTransport: CBPeripheralDelegate {
             delegate?.bleTransport(didDiscoverServices: error)
             return
         }
+        let found = (service.characteristics ?? []).map {
+            "\($0.uuid.uuidString)(0x\(String($0.properties.rawValue, radix: 16)))"
+        }
+        log("BLE_CHARS 共 \(found.count) 个：\(found.joined(separator: ","))")
         guard let tx = service.characteristics?.first(where: { $0.uuid == CoreBluetoothTransport.txUUID }),
               let rx = service.characteristics?.first(where: { $0.uuid == CoreBluetoothTransport.rxUUID })
         else {

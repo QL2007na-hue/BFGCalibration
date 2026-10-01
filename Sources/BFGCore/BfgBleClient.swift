@@ -338,6 +338,11 @@ public final class BfgBleClient: NSObject {
         result.discoveredVehicles = discoveredVehicles.map {
             Result.DiscoveredVehicle(serial: $0.serial, identifier: $0.identifier)
         }
+        // How many of the devices seen were even candidates. Zero says the
+        // vehicle never advertised a 14-character name — a different problem
+        // from a connection that gets made and then stalls.
+        log("SCAN_DONE 候选=\(discoveredVehicles.count) "
+            + "名字=\(discoveredVehicles.map { $0.serial }.joined(separator: ","))")
         finish(discoveredVehicles.isEmpty
                ? "未搜索到车辆；请唤醒车辆后重试。"
                : "已找到 \(discoveredVehicles.count) 台车辆。")
@@ -1431,7 +1436,11 @@ extension BfgBleClient: BleTransportDelegate {
         clearTimeout()
         state = .discovering
         status("已连接；正在发现服务…")
-        timeout(.discovering, 6, "发现服务超时")
+        // 6 s is the original's figure, but Android reached this point with a
+        // warm GATT cache and discovered unfiltered; a first discovery on iOS has
+        // neither, and the transport retries a silent attempt at 3 s. The budget
+        // has to be wide enough for a retry to land, so it is widened here.
+        timeout(.discovering, 15, "发现服务超时")
     }
 
     public func bleTransportDidConnect() {
