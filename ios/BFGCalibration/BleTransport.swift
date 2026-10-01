@@ -83,9 +83,28 @@ final class CoreBluetoothTransport: NSObject, BFGCore.BleTransport {
     private func log(_ line: String) { delegate?.bleTransport(log: line) }
 
     func startScan() {
-        guard central.state == .poweredOn else { return }
-        central.scanForPeripherals(withServices: nil,
-                                   options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        queue.async { [weak self] in
+            guard let self, self.central.state == .poweredOn else { return }
+            // A peripheral stops advertising the moment anything holds a
+            // connection, and a phone whose official app is still in the picture
+            // holds exactly that. Scanning alone can then never surface the
+            // vehicle — which matches the observed "no 14-character name at all"
+            // exports. CoreBluetooth will still hand over whatever the *system*
+            // already has connected, by service UUID, and those arrive through
+            // the same delegate call a scan result does.
+            let connected = self.central.retrieveConnectedPeripherals(
+                withServices: [CoreBluetoothTransport.serviceUUID])
+            for peripheral in connected {
+                let name = peripheral.name ?? ""
+                self.log("BLE_RETRIEVED name=\(name.isEmpty ? "(空)" : name) "
+                         + "id=\(peripheral.identifier.uuidString)")
+                self.scanned[peripheral.identifier.uuidString] = peripheral
+                self.delegate?.bleTransport(didDiscover: peripheral.identifier.uuidString,
+                                            name: name)
+            }
+            self.central.scanForPeripherals(withServices: nil,
+                                            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        }
     }
 
     func stopScan() {
