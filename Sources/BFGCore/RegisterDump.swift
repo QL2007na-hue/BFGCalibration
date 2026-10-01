@@ -162,9 +162,23 @@ public struct RegisterDump: Codable, Equatable {
 
         let expected = BfgProfileCatalog.expectedCore(profileEntry.value)
         guard expected > 0 else { return .inconclusive }
-        return expected == capacityEntry.value
-            ? .agrees
-            : .disagrees(expected: expected, reported: capacityEntry.value)
+
+        // The vehicle's own capacity register is the primary witness, but a
+        // meter that has never measured — a lithium pack on a lead-acid module,
+        // for instance — reports 0 there. That is "no measurement", not "0 mAh",
+        // and calling it a disagreement turned every such vehicle into an
+        // unexplained refusal. Fall back to the register pair the compatibility
+        // scan already trusts, and stay inconclusive only when both are silent.
+        let reported: Int
+        if capacityEntry.value > 0 {
+            reported = capacityEntry.value
+        } else if let fallback = entry(module: RegisterDump.meterModule, index: 0x0E),
+                  fallback.responded, fallback.stable, fallback.value > 0 {
+            reported = fallback.value
+        } else {
+            return .inconclusive
+        }
+        return expected == reported ? .agrees : .disagrees(expected: expected, reported: reported)
     }
 
     // MARK: - Serialisation

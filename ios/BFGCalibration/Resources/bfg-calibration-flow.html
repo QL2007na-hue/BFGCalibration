@@ -720,9 +720,13 @@ globalThis.lucide = {createIcons() {
 
   function writeTemplate() {
     const isDash = state.writeType === 'dashboard';
-    const writeBlocked = isDash ? !state.dashboardWriteSupported : !state.writeSupported;
+    // The read-only-serial rule is a default the owner can waive, so it must not
+    // disable the button — the tap is what opens the waiver. Every other blocker
+    // still disables it, and the native side re-checks before any frame is sent.
+    const serialWaivable = !!state.readOnlyVehicle && !isDash;
+    const writeBlocked = isDash ? !state.dashboardWriteSupported : (!state.writeSupported && !serialWaivable);
     const blockedReason = state.readOnlyVehicle
-      ? '此车仅支持读取，不会发送写入指令。'
+      ? '此车序列号以 N 开头，原版规则仅允许读取。点「核对并写入」会让你确认后放开本次写入。'
       : isDash
       ? '仪表盘写入暂不可用。请查看版本要求与当前读取结果。'
       : '计量模块写入条件未确认，请重新读取车辆信息。';
@@ -888,7 +892,8 @@ globalThis.lucide = {createIcons() {
       'clear-data-confirm': ['triangle-alert', '清除本机数据？', '将删除本机保存的配对凭据与参数备份。清除后需要重新配对才能使用，且无法找回备份。', '确认清除', 'clear-data-confirmed', '取消', 'close-modal'],
       'scan-unavailable': ['triangle-alert', '扫描未完成', state.errorMessage || '请检查车辆连接后再试。', '我知道了', 'close-modal', '', ''],
       'read-advisory': ['triangle-alert', '读取结果仅供参考', state.errorMessage || '请核对车辆实际配置。', '我知道了', 'close-modal', '', ''],
-      'unverified-dis': ['triangle-alert', '仪表配置尚未验证', state.errorMessage || '这组仪表配置尚无实车验证，请确认可以恢复原参数后继续。', '仍要尝试写入', 'confirm-unverified-dis', '取消', 'close-modal']
+      'unverified-dis': ['triangle-alert', '仪表配置尚未验证', state.errorMessage || '这组仪表配置尚无实车验证，请确认可以恢复原参数后继续。', '仍要尝试写入', 'confirm-unverified-dis', '取消', 'close-modal'],
+      'nserial-write': ['triangle-alert', '该车辆序列号以 N 开头', state.errorMessage || '原版工具把 N 开头的序列号一律视为只读。只有在你确认这是本人的车辆后才应继续。', '我确认，放开本次写入', 'confirm-nserial-write', '取消', 'close-modal']
     };
     const item = specs[kind];
     if (!item) return '';
@@ -1024,7 +1029,7 @@ globalThis.lucide = {createIcons() {
     else if (action === 'refresh-review') { state.result = null; go('connect-progress'); if (window.BfgNative) nativeAction('refresh-read'); }
     else if (action === 'confirm-write') {
       if (state.writeType === 'dashboard' && !state.dashboardWriteSupported) return;
-      if (state.writeType === 'meter' && !state.writeSupported) return;
+      if (state.writeType === 'meter' && !state.writeSupported && !state.readOnlyVehicle) return;
       state.modal = 'write-confirm'; render(); save();
     }
     else if (action === 'do-write') {

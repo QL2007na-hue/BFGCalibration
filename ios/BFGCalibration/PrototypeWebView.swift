@@ -89,6 +89,11 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         let expectedDisConfigRaw: Int
         /// Set once the user accepted an unvalidated dashboard voltage encoding.
         var allowUnverifiedDis: Bool = false
+    /// Set only after the rider explicitly accepts the read-only-serial default
+    /// for this session; see WriteAccessPolicy.allowsReadOnlySerials.
+    private var allowReadOnlySerialWrite = false
+    /// The write request parked on that confirmation, replayed once it is given.
+    private var pendingReadOnlySerialRequest: String?
         /// Gate stage: a dashboard write passes two gates, the meter one.
         var stage: Int = 0
     }
@@ -271,6 +276,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "confirm-unverified-dis":
             confirmUnverifiedDashboardWrite()
 
+        case "confirm-nserial-write":
+            confirmReadOnlySerialWrite()
+
         case "restore-first":
             requestRestore(first: true)
 
@@ -423,6 +431,21 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
             writeFailure("车辆数据尚未读取完成，请重新连接后再试。")
             return
         }
+        // The original refuses N-prefixed serials outright because it never
+        // validated them. That is a default, not a property of this vehicle, and
+        // the owner is the one who can tell the difference — so ask once, state
+        // the consequence, and keep every other rail in place.
+        if WriteAccessPolicy.isReadOnlySerial(serial), !allowReadOnlySerialWrite {
+            pendingReadOnlySerialRequest = value
+            state["errorMessage"] = "该车辆序列号以 N 开头。原版工具把这类序列号一律视为只读，"
+                + "因为它从未验证过这些车型——这台车就是其一。"
+                + "继续只会写入计量模块的电压与容量，写前仍会整片快照、仍需通过风险门、"
+                + "写后仍会全量比对，随时可以回滚到写入前的值。"
+            state["modal"] = "nserial-write"
+            pushState()
+            return
+        }
+
         guard let request = Self.parseWriteRequest(value) else {
             writeFailure("目标参数无效，请重新选择电压和容量。")
             return
@@ -490,6 +513,21 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
                                     restoreLabel: nil,
                                     expectedDisConfigRaw: lastRead.disConfigRaw)
         beginPreWriteRead()
+    }
+
+    /// The owner's answer to the read-only-serial default.
+    private func confirmReadOnlySerialWrite() {
+        guard let value = pendingReadOnlySerialRequest else { return }
+        pendingReadOnlySerialRequest = nil
+        allowReadOnlySerialWrite = true
+        WriteAccessPolicy.allowsReadOnlySerials = true
+        // The page gates the write button on these two, so they have to follow
+        // the decision or the rider confirms and then finds the button disabled.
+        state["readOnlyVehicle"] = false
+        if let read = lastRead { state["writeSupported"] = read.writeSupported }
+        state["modal"] = NSNull()
+        pushState()
+        requestWrite(value: value)
     }
 
     /// The page's "still try" answer to the unvalidated-encoding warning.
@@ -600,9 +638,20 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
 
             // A module that did not read back completely is not backed up, and
             // an incomplete backup is not a way back.
-            guard dump.isFullyReadable(module: module) else {
-                writeFailure("写入前未能完整读取该模块的全部寄存器，备份不完整，"
-                    + "本次没有发送写入指令。请保持车辆开机后重试。")
+            // The target and the addresses a rollback depends on have to be
+            // readable and stable. Addresses the vehicle simply never answers are
+            // recorded in the snapshot but must not by themselves veto the write:
+            // demanding all 256 made writing impossible on real hardware, where
+            // this vehicle leaves 37 addresses of the meter permanently silent.
+            let required = pending.isDashboard ? [0x92] : [0x00, 0x0E, 0x0F, 0x1C]
+            let unreadable = required.filter { index in
+                guard let entry = dump.entry(module: module, index: index) else { return true }
+                return !(entry.responded && entry.stable)
+            }
+            guard unreadable.isEmpty else {
+                writeFailure("写入前未能稳定读到关键寄存器（"
+                    + unreadable.map { String(format: "0x%02X", $0) }.joined(separator: "、")
+                    + "），备份不完整，本次没有发送写入指令。请保持车辆开机后重试。")
                 return
             }
 
