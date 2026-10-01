@@ -518,7 +518,7 @@ globalThis.lucide = {createIcons() {
             </button>
             <button class="nb-action" type="button" data-action="pair-list">
               <span class="nb-action-icon">${icon('key-round')}</span>
-              <span class="nb-action-copy"><span class="nb-action-title">临时密钥配对</span><span class="nb-action-desc">在车上确认；彻底结束应用后需重新配对</span></span>${icon('chevron-right')}
+              <span class="nb-action-copy"><span class="nb-action-title">临时密钥配对</span><span class="nb-action-desc">在车上确认一次；凭据存入系统钥匙串，之后免按键重连</span></span>${icon('chevron-right')}
             </button>
           </div>
           <div class="nb-tip">${icon('info')}<span>普通连接遇到认证无回复时，可选择临时密钥配对，不会自动覆盖原凭据。</span></div>
@@ -617,7 +617,7 @@ globalThis.lucide = {createIcons() {
             <div class="nb-info-row"><span>连接方式</span><strong>${pairing ? '车端确认配对' : '已有凭据认证'}</strong></div>
           </div>
         </section>
-        ${pairing ? `<div class="nb-alert warning nb-section">${icon('triangle-alert')}<span>密钥只在本次运行期间有效；彻底结束应用后需重新配对。九号出行可能也需要再次配对。</span></div>` : ''}
+        ${pairing ? `<div class="nb-alert warning nb-section">${icon('triangle-alert')}<span>配对会覆盖车端唯一的密钥槽，九号出行可能因此需要重新配对。本机凭据保存在系统钥匙串，重启应用依然有效；但重新签名安装会改变钥匙串归属，那时才需要重新配对。</span></div>` : ''}
         <section class="nb-section">
           <button class="nb-primary" type="button" data-action="${pairing ? 'begin-pair' : 'begin-connect'}">${pairing ? '发起配对' : '发起连接'}</button>
           <button class="nb-secondary" style="margin-top:10px" type="button" data-action="home">取消</button>
