@@ -147,6 +147,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     /// measured against afterwards.
     private var preWriteDump: RegisterDump?
     private var lastAdaptationDump: RegisterDump?
+    /// Where the last snapshot was written, so it can be handed to the share
+    /// sheet without guessing its timestamped name.
+    private var lastDumpURL: URL?
     private var previousAdaptationDump: RegisterDump?
     private var gate: RiskGate?
     private var gateNonce = 0
@@ -299,6 +302,12 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
 
         case "export-diag":
             exportDiagnostics()
+
+        case "share-diagnostic":
+            shareDiagnosticFile()
+
+        case "share-dump":
+            shareLatestDumpFile()
 
         case "dump-registers":
             startAdaptationDump()
@@ -807,18 +816,66 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
 
     private func exportDiagnostics() {
         // Android wrote a file and shared it through FileProvider. iOS writes to
-        // the app's Documents directory, which the Files app can reach.
+        // the app's Documents directory; reaching it needs the file-sharing keys
+        // in Info.plist *and* a share path that does not depend on the Files app
+        // at all, which is what the button on the dialog is for.
         let url = Self.documentsDirectory().appendingPathComponent("bfg-diagnostic.txt")
         let text = diagnosticReport()
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             state["errorMessage"] = "\(url.lastPathComponent) · \(text.count) 字节，"
-                + "可在「文件」App 的本应用目录中找到。"
+                + "可在「文件」App 的本应用目录中找到，或直接用下面的分享按钮发出去。"
         } catch {
             state["errorMessage"] = "诊断导出失败：\(error.localizedDescription)"
         }
         state["modal"] = "diagnostic-exported"
         pushState()
+    }
+
+    // MARK: - Sharing exports
+
+    /// Hands a file to the system share sheet.
+    ///
+    /// The Files app is not a route that always exists — before this app
+    /// declared file sharing its Documents directory did not appear there at
+    /// all, so an export wrote the file and left the rider with no way to get it
+    /// off the phone. Sharing from the app itself is the path that always works,
+    /// and it is one tap instead of a folder hunt.
+    private func share(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            state["errorMessage"] = "文件不存在，请先导出一次。"
+            state["modal"] = "dump-complete"
+            pushState()
+            return
+        }
+        guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first,
+              var presenter = (scene.windows.first(where: { $0.isKeyWindow })
+                                ?? scene.windows.first)?.rootViewController
+        else { return }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        let activity = UIActivityViewController(activityItems: [url],
+                                                applicationActivities: nil)
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = presenter.view
+            popover.sourceRect = CGRect(x: presenter.view.bounds.midX,
+                                        y: presenter.view.bounds.midY, width: 0, height: 0)
+        }
+        presenter.present(activity, animated: true)
+    }
+
+    private func shareDiagnosticFile() {
+        share(Self.documentsDirectory().appendingPathComponent("bfg-diagnostic.txt"))
+    }
+
+    private func shareLatestDumpFile() {
+        guard let url = lastDumpURL else {
+            state["errorMessage"] = "还没有寄存器快照，请先导出一次。"
+            state["modal"] = "dump-complete"
+            pushState()
+            return
+        }
+        share(url)
     }
 
     /// Everything the log had, plus the state a driver-side problem needs:
@@ -865,6 +922,7 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         let url = Self.documentsDirectory().appendingPathComponent(name)
         do {
             try dump.json().write(to: url, options: .atomic)
+            lastDumpURL = url
             state["errorMessage"] = "\(name) · \(dump.entries.count) 个地址，"
                 + "\(dump.respondedCount) 个有响应 · 指纹 \(dump.fingerprint.identifier)"
         } catch {
