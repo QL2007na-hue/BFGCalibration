@@ -89,11 +89,6 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         let expectedDisConfigRaw: Int
         /// Set once the user accepted an unvalidated dashboard voltage encoding.
         var allowUnverifiedDis: Bool = false
-    /// Set only after the rider explicitly accepts the read-only-serial default
-    /// for this session; see WriteAccessPolicy.allowsReadOnlySerials.
-    private var allowReadOnlySerialWrite = false
-    /// The write request parked on that confirmation, replayed once it is given.
-    private var pendingReadOnlySerialRequest: String?
         /// Gate stage: a dashboard write passes two gates, the meter one.
         var stage: Int = 0
     }
@@ -123,6 +118,14 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     /// Result of the last completed read, which every write is derived from.
     private var lastRead: BfgBleClient.Result?
     private var pendingWrite: PendingWrite?
+    /// Set only after the rider explicitly accepts the read-only-serial default
+    /// for this session; see WriteAccessPolicy.allowsReadOnlySerials. It lives on
+    /// the coordinator, never on PendingWrite: a private stored property there
+    /// would demote the struct's memberwise initialiser to private and break
+    /// every construction site.
+    private var allowReadOnlySerialWrite = false
+    /// The write request parked on that confirmation, replayed once it is given.
+    private var pendingReadOnlySerialRequest: String?
     /// A dashboard write parked on the unvalidated-encoding warning.
     private var pendingUnverified: PendingWrite?
 
