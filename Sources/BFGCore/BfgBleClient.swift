@@ -252,8 +252,18 @@ public final class BfgBleClient: NSObject {
 
     public func start() {
         do {
-            if WriteAccessPolicy.isReadOnlySerial(record.effectiveSn), operation != .readOnly,
-               operation != .compareRead, operation != .registerScan {
+            // The original guards exactly the two write operations:
+            //
+            //     if ((operation == WRITE_PROFILE || operation == WRITE_DIS_VOLTAGE)
+            //             && isReadOnlySerial(record.effectiveSn)) throw ...
+            //
+            // Written the other way round — "allow these three" — the rule also
+            // swallowed pairing and the register sweep. An N-prefixed vehicle then
+            // could not negotiate the credential that reading requires at all, so
+            // the app was unusable on it rather than read-only. A read-only serial
+            // means "send no writes", not "run no operations".
+            if (operation == .writeProfile || operation == .writeDisVoltage),
+               WriteAccessPolicy.isReadOnlySerial(record.effectiveSn) {
                 throw NSError(domain: "bfg", code: 1, userInfo: [NSLocalizedDescriptionKey:
                     "该序列号以 N 开头，仅允许读取，不发送任何写入指令。"])
             }
@@ -850,8 +860,14 @@ public final class BfgBleClient: NSObject {
             let index = try requireReadAck(plain, src: registerScanModule, len: 7 + length)
             guard index == registerScanIndex else { return }
             result.registerScanReplies += 1
+            // The value is the whole point of a sweep. Logging only the index
+            // recorded that an address answered but not what it said, so the
+            // adaptation data had to be gathered by the Android build instead.
+            let payload = Hex.encode(Array(plain[7..<(7 + length)]))
+            let value = length == 1 ? Int(plain[7]) : NinebotFrame.readLe16(plain, offset: 7)
             log(String(format: "REGISTER_READ module=0x%02X index=0x%02X length=%d",
-                       registerScanModule, registerScanIndex, length))
+                       registerScanModule, registerScanIndex, length)
+                + " data=\(payload) value=\(value)")
             clearTimeout()
             advanceRegisterScan()
 
