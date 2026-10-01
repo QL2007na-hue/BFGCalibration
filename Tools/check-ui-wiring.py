@@ -18,7 +18,9 @@ Usage: Tools/check-ui-wiring.py
 Requires: google-chrome or chromium (same as render-screens.sh).
 """
 import os
+import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -88,6 +90,18 @@ def part1_contract_diff(html, swift):
         fail("原生会弹出、但页面没有定义的弹窗：" + ", ".join(missing))
     else:
         print(f"  ✓ {len(native_modals)} 个原生弹窗在页面上都有定义")
+
+    # A spent directive must be *removed*, not set to NSNull. Nulling it leaves
+    # screen:null in every later payload; the page copies it into its own state
+    # and its render switch falls through to the home template, so any
+    # subsequent push drags the rider home. The interaction checks below cannot
+    # see this, because they hand-write the payload the native side would send.
+    if re.search(r"state\[key\]\s*=\s*NSNull\(\)", swift):
+        fail("pushState() 把一次性指令置为 NSNull；残留的 screen:null 会把页面打回首页")
+    elif "removeValue(forKey: key)" not in swift:
+        fail("pushState() 未清除一次性指令")
+    else:
+        print("  ✓ 一次性指令发送后从状态中移除，不会残留 screen:null")
 
     return not failures
 
@@ -169,6 +183,17 @@ window.addEventListener('load', function () {
     click('[data-action="close-modal"]');
     update({ busyMessage: null });
     ok('声明关闭后不复活', last('modal-state') === 'closed', String(last('modal-state')));
+
+    // The exact shape the native side used to send once a directive was spent:
+    // every one-shot key present and null. None of it is a navigation order, so
+    // the page must stay where it is. Asserted against the rendered DOM rather
+    // than the reported 'screen' events: a null screen navigates without
+    // reporting, which is precisely how the defect stayed hidden.
+    window.bfgNativeGo('settings');
+    update({ screen: null, modal: null, errorMessage: null, result: null,
+             writeGate: null, busyMessage: '正在连接车辆…' });
+    ok('一次性指令被清空后的推送不把页面打回首页',
+       document.body.innerText.indexOf('关于与使用声明') !== -1, '');
   } catch (e) { out.push('ERROR ' + e.message); }
   document.title = 'UICHECK|' + out.join('|');
 });
@@ -178,22 +203,43 @@ window.addEventListener('load', function () {
 
 def part2_interaction(html):
     print("\n── 2. 页面交互（无头浏览器，走原生同一通道断言）")
+    # CHROME may be a bare name to look up on PATH, or an absolute path to a
+    # specific binary — Edge and Chrome-for-Testing on Windows have neither a
+    # stable name nor a PATH entry.
     chrome = os.environ.get("CHROME", "google-chrome")
-    if not any(os.path.exists(os.path.join(p, chrome))
-               for p in os.environ.get("PATH", "").split(os.pathsep)):
+    if os.path.isabs(chrome):
+        found = os.path.exists(chrome)
+    else:
+        found = any(os.path.exists(os.path.join(p, chrome))
+                    for p in os.environ.get("PATH", "").split(os.pathsep))
+    if not found:
         print("  ⚠ 未找到 chrome/chromium，跳过（渲染类检查在本机与 CI 都不做）")
         return
 
     with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False,
-                                     encoding="utf-8", dir="/tmp") as handle:
+                                     encoding="utf-8",
+                                     dir=tempfile.gettempdir()) as handle:
         handle.write(html.replace("</body>", PAGE_TEST + "</body>"))
         path = handle.name
 
-    result = subprocess.run(
-        [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-         "--virtual-time-budget=8000", "--window-size=390,844", "--dump-dom",
-         f"file://{path}"],
-        capture_output=True, text=True)
+    # A dedicated profile keeps the run hermetic: without it the launcher hands
+    # the URL to an already-running browser, exits immediately, and the captured
+    # DOM comes back empty.
+    profile = tempfile.mkdtemp(prefix="bfg-uicheck-profile-")
+    try:
+        result = subprocess.run(
+            [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+             "--no-first-run", "--disable-extensions",
+             f"--user-data-dir={profile}",
+             "--virtual-time-budget=8000", "--window-size=390,844", "--dump-dom",
+             pathlib.Path(path).as_uri()],
+            capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        fail("无头浏览器超时未返回")
+        return
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+        os.unlink(path)
     match = re.search(r"<title>UICHECK\|(.*?)</title>", result.stdout, re.S)
     if not match:
         fail("页面测试没有返回结果（chrome 未运行？）")

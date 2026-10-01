@@ -1040,6 +1040,11 @@ globalThis.lucide = {createIcons() {
 
   window.bfgNativeUpdate = function(json) {
     const update = typeof json === 'string' ? JSON.parse(json) : json;
+    // Native clears a spent directive by removing it. A null must never reach
+    // state.screen anyway: the render switch below has no null branch, so it
+    // selects the home template, and every later push would then send the
+    // rider home. Only a real screen name may move navigation.
+    if (update.screen == null) delete update.screen;
     Object.assign(state, update);
     if (update.screen) { state.screen = update.screen; nativeAction('screen', update.screen); }
     // A gate arriving opens its modal; the native side clears it after the write.

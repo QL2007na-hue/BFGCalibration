@@ -193,13 +193,26 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     /// dialog they just closed. On the settings screen that made every
     /// navigation bounce back and the home button unreachable.
     ///
-    /// So each directive is sent exactly once and then dropped from the state.
+    /// So each directive is sent exactly once and then removed from the state —
+    /// removed, not overwritten with NSNull: a null one is itself a directive,
+    /// and the page obeys it by rendering the home screen.
     static let oneShotKeys = ["screen", "modal", "errorMessage", "result", "writeGate"]
 
     private func pushState() {
         guard pageReady, let webView else { return }
+        // payload is a value copy, taken before the directives are consumed.
         let payload = state
-        for key in Self.oneShotKeys { state[key] = NSNull() }
+        // Remove the directive; never leave NSNull behind. A lingering
+        // "screen": null is copied into the page's own state by its
+        // Object.assign, and a null screen has no branch in the page's render
+        // switch, so it falls through to the home template. The next unrelated
+        // push — a status line, the one-second scan countdown — then repatriated
+        // the rider to the home screen from wherever they were.
+        //
+        // An explicit state["modal"] = NSNull() still sends its null exactly
+        // once, which is how a dialog is deliberately closed. What must not
+        // survive is the implicit null this loop used to write.
+        for key in Self.oneShotKeys { state.removeValue(forKey: key) }
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
         webView.evaluateJavaScript("window.bfgNativeUpdate && window.bfgNativeUpdate(\(json));")
