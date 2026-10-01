@@ -397,9 +397,18 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         startClient(record: placeholderRecord(serial: serial), operation: .pairAndRead)
     }
 
+    /// A sweep of one module.
+    ///
+    /// This used to run the single-pass census, which reported only how many
+    /// addresses answered and wrote nothing anywhere — so a finished scan left
+    /// the rider with no file and nothing to share, which is what the buttons
+    /// appeared to promise. It now runs the same two-pass snapshot the full
+    /// sweep does, for a single module: real values, real stability, a JSON in
+    /// Documents and a share button on the completing dialog.
     private func scan(module: Int) {
+        dumpPurpose = .adaptation
         startClient(record: placeholderRecord(serial: serial),
-                    operation: .registerScan, targetProfile: module)
+                    operation: .dumpRegisters, dumpModules: [module])
     }
 
     private func refreshRead() {

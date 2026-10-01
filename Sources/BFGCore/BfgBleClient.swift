@@ -1035,6 +1035,13 @@ public final class BfgBleClient: NSObject {
 
     private func requestDumpRead() {
         let module = dumpModules[dumpModuleCursor]
+        // Progress, because a sweep runs into the minutes and a screen whose text
+        // never changes reads as "hung" — which is how a snapshot gets cancelled
+        // half way and leaves no file behind at all.
+        if dumpIndex % 32 == 0 {
+            status("正在读取寄存器快照：模块 0x" + String(format: "%02X", module)
+                + " 第 \(dumpPass + 1)/2 遍 \(dumpIndex)/256…")
+        }
         send(RegisterReadPlan.probeRequest(module: module, index: dumpIndex))
         timeout(.waitDumpScan, 0.65, "寄存器读取无回复")
     }
