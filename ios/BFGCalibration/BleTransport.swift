@@ -295,6 +295,14 @@ extension CoreBluetoothTransport: CBPeripheralDelegate {
             delegate?.bleTransport(didDiscoverServices: BleError.serviceNotFound)
             return
         }
+        // Success has to be reported, and reported *before* the characteristics
+        // are requested. Every other call of this delegate carries an error, so
+        // the client was never told the channel existed: it sat in `discovering`
+        // until its timeout and reported "发现服务超时" on a connection that had in
+        // fact found the service, both characteristics and a working notify. The
+        // simulator's VirtualLink does signal success here, which is why every
+        // test passed while the real path could never get past this point.
+        delegate?.bleTransport(didDiscoverServices: nil)
         // Unfiltered for the same reason as the services above.
         peripheral.discoverCharacteristics(nil, for: service)
     }
