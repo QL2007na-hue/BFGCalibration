@@ -438,6 +438,41 @@
   }
   .nb-action:active, .nb-primary:active, .nb-secondary:active{ transform:none }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   版型对齐主站：数值走等宽 + 表格数字，层级靠 hairline 与灰度，
+   不靠加粗和放大。卡片描边压到 hairline 级别。
+   ───────────────────────────────────────────────────────────── */
+.nb-value, .nb-metric, .nb-reading, .nb-chip, .nb-badge,
+.nb-info-row > span:last-child, .nb-kv > *{
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+/* 关键读数：等宽 + 负字距，像仪器面板 */
+.nb-reading, .nb-metric-value{
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: -.02em;
+}
+/* 卡片描边统一压到 hairline，阴影收掉，靠表面色阶分层 */
+.nb-card, .nb-action, .nb-section.nb-card, .nb-vehicle-card{
+  border-color: var(--nb-hairline);
+  box-shadow: none;
+}
+/* 分隔线用 hairline，替代一段一段的方框 */
+.nb-info-row + .nb-info-row{ border-top: 1px solid var(--nb-hairline) }
+/* 区块标题：小号 + 大字距，像标签而不是标题 */
+.nb-section-title{
+  font-size: 12.5px;
+  letter-spacing: .06em;
+  font-weight: 500;
+  color: var(--nb-muted);
+  text-transform: none;
+}
+/* 主按钮：更紧的圆角与更实的色，去掉上方的白色高光渐变 */
+.nb-action.is-primary{
+  background-image: none;
+  box-shadow: 0 8px 24px rgba(79,209,174,.18);
+}
 </style>
 
 <script>
