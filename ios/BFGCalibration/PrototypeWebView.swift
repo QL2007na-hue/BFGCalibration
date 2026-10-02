@@ -809,6 +809,12 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     private func requestRestore(first: Bool) {
         let backup = first ? backupStore.firstBackup(serial: serial)
                            : backupStore.prewriteBackup(serial: serial)
+        // A restore is its own write flow and must earn its own approval: without
+        // this, an override given for a parameter write leaked into the restore
+        // path, which would then skip the table check entirely.
+        offTableApproved = false
+        pendingOffTableDump = nil
+
         guard backup.valid else {
             // The settings screen has no error area, so a message written here is
             // never seen: the button simply looked dead. Anything that stops a
