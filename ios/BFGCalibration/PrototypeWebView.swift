@@ -299,11 +299,30 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
             gate = nil
 
         case "cancel":
+            // Captured before the teardown: whether this cancel aborted a write
+            // flow decides where the rider has to land.
+            let abortedWriteFlow = pendingWrite != nil
+                || dumpPurpose == .preWrite
+                || activeOperation == .writeProfile
+                || activeOperation == .writeDisVoltage
             client?.cancel()
             client = nil
+            dumpPurpose = nil
             pendingWrite = nil
+            pendingUnverified = nil
             gate = nil
             state["busyMessage"] = NSNull()
+            // Cancelling used to leave the page on the write-progress screen with
+            // nothing on it. The back arrow sends a cancel and then deliberately
+            // does not navigate, the client's own cancel never calls the listener
+            // back, and that screen's caption falls back to a waiting line — so
+            // the rider could not reach settings, could not export the log and
+            // could not get home. A cancel has to end somewhere final and say so.
+            if abortedWriteFlow {
+                state["errorMessage"] = "已取消；本次没有发送任何写入指令，车辆参数未改变。"
+                state["screen"] = "review"
+                state["modal"] = "operation-failed"
+            }
             pushState()
 
         case "show-license":
@@ -635,7 +654,16 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
 
         switch purpose {
         case .preWrite:
-            guard let pending = pendingWrite else { return }
+            guard let pending = pendingWrite else {
+                // The write was cancelled while its snapshot ran. The busy caption
+                // was already cleared above, so returning here left the progress
+                // screen blank and unexitable; end the flow visibly instead.
+                state["errorMessage"] = "已取消；本次没有发送任何写入指令，车辆参数未改变。"
+                state["screen"] = "review"
+                state["modal"] = "operation-failed"
+                pushState()
+                return
+            }
             let module = pending.isDashboard ? RegisterDump.dashboardModule
                                              : RegisterDump.meterModule
 
