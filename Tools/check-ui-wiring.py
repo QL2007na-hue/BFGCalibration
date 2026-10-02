@@ -103,6 +103,19 @@ def part1_contract_diff(html, swift):
     else:
         print("  ✓ 一次性指令发送后从状态中移除，不会残留 screen:null")
 
+    # The click chain has to end in a fallback. Every modal button is generated
+    # from the specs table, so its action never appears as a literal
+    # data-action="..." and the checks above cannot see it. If the chain does not
+    # list that action and has no fallback, the button is wired to nothing at
+    # all: tapping it does nothing — no error, no navigation, no log line. That
+    # is exactly how the read-only-serial confirmation shipped dead on real
+    # hardware while its native handler sat waiting for a message that never came.
+    fallback = "else { if (window.BfgNative) nativeAction(action); }"
+    if fallback not in html:
+        fail("点击链没有兜底分支：未列出的动作（例如模板生成的弹窗按钮）会变成死按钮")
+    else:
+        print("  ✓ 点击链有兜底分支，未列出的动作仍会发往原生")
+
     return not failures
 
 

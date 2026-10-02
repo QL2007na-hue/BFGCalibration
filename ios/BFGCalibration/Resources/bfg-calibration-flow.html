@@ -1016,6 +1016,7 @@ globalThis.lucide = {createIcons() {
     }
     else if (action === 'post-write-reread') { state.modal = null; go('post-write-check'); if (window.BfgNative) nativeAction('post-write-reread'); }
     else if (action === 'confirm-unverified-dis') { state.modal = null; state.writeStage = 'precheck'; go('write-progress'); if (window.BfgNative) nativeAction('confirm-unverified-dis'); }
+    else if (action === 'confirm-nserial-write') { state.modal = null; state.writeStage = 'precheck'; go('write-progress'); if (window.BfgNative) nativeAction('confirm-nserial-write'); }
     else if (action === 'write-gate-confirm') {
       const box = document.getElementById('write-gate-check');
       const confirmButton = document.getElementById('write-gate-confirm');
@@ -1041,6 +1042,12 @@ globalThis.lucide = {createIcons() {
       if (window.BfgNative) nativeAction('do-write', JSON.stringify({type:state.writeType,voltage:state.voltage,capacity:state.capacity}));
       else window.setTimeout(() => completeWrite('success'), 900);
     }
+    // Anything this chain does not handle itself still has to reach the native
+    // side. Without a fallback, a button whose action is not listed above is
+    // wired to nothing at all: tapping it does absolutely nothing — no error, no
+    // navigation, no log line — which is exactly how the read-only-serial
+    // confirmation shipped dead while its native handler sat there waiting.
+    else { if (window.BfgNative) nativeAction(action); }
   });
 
   window.bfgNativeUpdate = function(json) {
