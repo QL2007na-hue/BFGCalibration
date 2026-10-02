@@ -848,8 +848,15 @@ public final class BfgBleClient: NSObject {
         case .waitDumpScan:
             let module = dumpModules[dumpModuleCursor]
             let length = RegisterReadPlan.probeLength(module: module, index: dumpIndex)
-            let index = try requireReadAck(plain, src: module, len: 7 + length)
-            guard index == dumpIndex else { return }
+            // A sweep is read-only, so a reply that is not a read acknowledgement
+            // is one address that did not answer usefully — not a reason to throw
+            // away the other 255. Returning here lets the normal timeout record it
+            // and move on. Strictness belongs on the write path, where a malformed
+            // frame must never be mistaken for success. On the real vehicle one
+            // dashboard address answers with a frame that is not an ack at all,
+            // and it used to end the entire snapshot.
+            guard let index = try? requireReadAck(plain, src: module, len: 7 + length),
+                  index == dumpIndex else { return }
             clearTimeout()
             // Two meter addresses answer with a single byte; reading those as
             // a 16-bit word would index past the end of the frame.
@@ -862,8 +869,10 @@ public final class BfgBleClient: NSObject {
         case .waitRegisterScan:
             let length = try RegisterReadPlan.length(module: registerScanModule,
                                                      index: registerScanIndex)
-            let index = try requireReadAck(plain, src: registerScanModule, len: 7 + length)
-            guard index == registerScanIndex else { return }
+            // Same reasoning as the dump above: a census is read-only, so one
+            // unparseable reply counts as a timeout rather than a failed sweep.
+            guard let index = try? requireReadAck(plain, src: registerScanModule, len: 7 + length),
+                  index == registerScanIndex else { return }
             result.registerScanReplies += 1
             // The value is the whole point of a sweep. Logging only the index
             // recorded that an address answered but not what it said, so the

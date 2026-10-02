@@ -124,8 +124,10 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     /// would demote the struct's memberwise initialiser to private and break
     /// every construction site.
     private var allowReadOnlySerialWrite = false
-    /// The write request parked on that confirmation, replayed once it is given.
-    private var pendingReadOnlySerialRequest: String?
+    /// The action parked on the read-only-serial confirmation, run once it is
+    /// given. A closure rather than a replayed value, because two different flows
+    /// — a parameter write and a restore — can be the thing being confirmed.
+    private var pendingSerialWaivedAction: (() -> Void)?
     /// Throttle for the on-disk copy of the diagnostic trail.
     private var lastPersist = Date.distantPast
     /// A dashboard write parked on the unvalidated-encoding warning.
@@ -466,7 +468,7 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         // the owner is the one who can tell the difference — so ask once, state
         // the consequence, and keep every other rail in place.
         if WriteAccessPolicy.isReadOnlySerial(serial), !allowReadOnlySerialWrite {
-            pendingReadOnlySerialRequest = value
+            pendingSerialWaivedAction = { [weak self] in self?.requestWrite(value: value) }
             state["errorMessage"] = "该车辆序列号以 N 开头。原版工具把这类序列号一律视为只读，"
                 + "因为它从未验证过这些车型——这台车就是其一。"
                 + "继续只会写入计量模块的电压与容量，写前仍会整片快照、仍需通过风险门、"
@@ -518,7 +520,18 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         } else {
             let voltageCode = BfgProfileCatalog.voltageCode(forVoltage: request.voltage)
             let currentIndex = lastRead.profileRaw < 0 ? -1 : (lastRead.profileRaw >> 4) & 0xF
-            profile = BfgProfileCatalog.profileIndex(requestedMilliAh: request.capacityMah,
+            // profileIndex resolves a table *index*, not the byte that goes on the
+            // wire. The wire byte carries the index in its high nibble and the
+            // voltage code in its low nibble, so the shift is not optional: using
+            // the bare index sent 0x05 where 0x50 was meant — an illegal voltage
+            // code, not merely the wrong capacity — and the vehicle rejected every
+            // write, reading back its old value four times in a row. This is why
+            // no write ever landed on the real vehicle.
+            // profileByte, not profileIndex: the index alone is not the byte that
+            // goes on the wire, and using it sent 0x05 where 0x50 was meant — an
+            // illegal voltage code, so the vehicle rejected every write and read
+            // back its old value. Two unit tests now pin this down.
+            profile = BfgProfileCatalog.profileByte(requestedMilliAh: request.capacityMah,
                                                     voltageCode: voltageCode,
                                                     preferring: currentIndex)
             guard profile >= 0 else {
@@ -548,8 +561,8 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
 
     /// The owner's answer to the read-only-serial default.
     private func confirmReadOnlySerialWrite() {
-        guard let value = pendingReadOnlySerialRequest else { return }
-        pendingReadOnlySerialRequest = nil
+        guard let action = pendingSerialWaivedAction else { return }
+        pendingSerialWaivedAction = nil
         allowReadOnlySerialWrite = true
         WriteAccessPolicy.allowsReadOnlySerials = true
         // The page gates the write button on these two, so they have to follow
@@ -558,7 +571,7 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         if let read = lastRead { state["writeSupported"] = read.writeSupported }
         state["modal"] = NSNull()
         pushState()
-        requestWrite(value: value)
+        action()
     }
 
     /// The page's "still try" answer to the unvalidated-encoding warning.
@@ -759,12 +772,20 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         let backup = first ? backupStore.firstBackup(serial: serial)
                            : backupStore.prewriteBackup(serial: serial)
         guard backup.valid else {
-            state["errorMessage"] = "当前车辆没有可用备份，或该车仅允许读取。请核对车辆后重试。"
+            // The settings screen has no error area, so a message written here is
+            // never seen: the button simply looked dead. Anything that stops a
+            // restore has to say so in a dialog.
+            state["errorMessage"] = "当前车辆没有可用备份。请先连接车辆读取一次 —— 备份在读取成功时建立。"
+            state["modal"] = "operation-failed"
             pushState()
             return
         }
-        guard !WriteAccessPolicy.isReadOnlySerial(serial) else {
-            state["errorMessage"] = "该序列号以 N 开头，仅允许读取，不发送任何写入指令。"
+        if WriteAccessPolicy.isReadOnlySerial(serial), !allowReadOnlySerialWrite {
+            pendingSerialWaivedAction = { [weak self] in self?.requestRestore(first: first) }
+            state["errorMessage"] = "该车辆序列号以 N 开头。原版工具把这类序列号一律视为只读。"
+                + "恢复会把备份里的档位写回计量模块，因此同样需要你确认一次；"
+                + "确认后本次会话的写入一并放开。"
+            state["modal"] = "nserial-write"
             pushState()
             return
         }

@@ -54,4 +54,22 @@ public enum BfgProfileCatalog {
         }
         return -1
     }
+
+    /// The byte that actually goes on the wire for a picker choice.
+    ///
+    /// The two are not the same thing and confusing them is silent: the table
+    /// index alone (5 for 26Ah) is a *legal-looking* byte whose voltage nibble
+    /// then reads as 5, which no firmware accepts. Writing the bare index sent
+    /// 0x05 where 0x50 was meant, so the vehicle rejected every write and read
+    /// back its old value — the failure looked like an old vehicle refusing to
+    /// be written, not like a bug. Callers must use this, never profileIndex.
+    /// Returns -1 when the capacity is not part of that voltage's table.
+    public static func profileByte(requestedMilliAh: Int, voltageCode: Int,
+                                   preferring currentIndex: Int) -> Int {
+        let index = profileIndex(requestedMilliAh: requestedMilliAh,
+                                 voltageCode: voltageCode,
+                                 preferring: currentIndex)
+        guard index >= 0 else { return -1 }
+        return (index << 4) | voltageCode
+    }
 }
