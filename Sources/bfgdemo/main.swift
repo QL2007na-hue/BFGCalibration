@@ -333,9 +333,13 @@ do {
 // MARK: - 14. 静态表与车辆不符时必须能检出
 
 do {
-    // 车端容量被改成与档位不符，模拟「这版固件与静态表不一致」
-    let vehicle = makeVehicle { $0.capacityMah = 18000 }
-    run("静态表一致性：不符时必须检出", vehicle: vehicle,
+    // 车端容量落在一个静态表根本叫不出名字的值上，才是「这版固件与静态表不一致」。
+    //
+    // 这里不能用表内的值（例如早先用的 18000）：桩位与容量脱节、而容量本身在表内，
+    // 说明这张表恰恰描述得了这台车 —— 那个状态可以被一次正确写入修复。把它判成
+    // "表不适用"会把唯一的出路堵死，真机上就是这么卡住的。
+    let vehicle = makeVehicle { $0.capacityMah = 21000 }
+    run("静态表一致性：车端容量不在表内时必须检出", vehicle: vehicle,
         operation: .dumpRegisters, store: pairedStore, timeout: 300,
         dumpModules: [RegisterDump.meterModule]) { c, _ in
         if let f = c.failure { return "失败：\(f)" }
@@ -343,8 +347,26 @@ do {
         guard case .disagrees(let expected, let reported) = dump.agreement() else {
             return "应判为不一致，实际 \(dump.agreement())"
         }
-        guard expected == 26000, reported == 18000 else {
+        guard expected == 26000, reported == 21000 else {
             return "不一致详情不符：期望 26000 / 实际 \(reported)"
+        }
+        return nil
+    }
+}
+
+// MARK: - 14b. 桩位与容量脱节但容量在表内：不得判成"表不适用"
+
+do {
+    // 复刻真机数字：档位字节仍是 0x50（表说 26000），容量寄存器却是 20000 ——
+    // 20000 正是表里索引 0 的值。这种"脱节"必须放行，否则修复它的写入会被自己挡住。
+    let vehicle = makeVehicle { $0.capacityMah = 20000 }
+    run("静态表一致性：脱节但容量在表内时必须放行", vehicle: vehicle,
+        operation: .dumpRegisters, store: pairedStore, timeout: 300,
+        dumpModules: [RegisterDump.meterModule]) { c, _ in
+        if let f = c.failure { return "失败：\(f)" }
+        guard let r = c.finished, let dump = r.registerDump else { return "未产出快照" }
+        guard dump.agreement() == .inconclusive else {
+            return "应放行（inconclusive），实际 \(dump.agreement())"
         }
         return nil
     }
