@@ -150,7 +150,10 @@ public struct RegisterDump: Codable, Equatable {
         /// The table and the vehicle disagree; `reported` is what the vehicle
         /// actually holds.
         case disagrees(expected: Int, reported: Int)
-        /// One of the two values could not be read, so nothing can be concluded.
+        /// Nothing can be concluded: either a value could not be read, or the
+        /// vehicle's capacity is one the table names while its profile byte names
+        /// another entry — a drifted state a write can repair, not evidence that
+        /// the table is wrong.
         case inconclusive
     }
 
@@ -178,7 +181,20 @@ public struct RegisterDump: Codable, Equatable {
         } else {
             return .inconclusive
         }
-        return expected == reported ? .agrees : .disagrees(expected: expected, reported: reported)
+        if expected == reported { return .agrees }
+
+        // The profile byte and the capacity registers disagree. That is not
+        // automatically "this table does not describe your firmware": when the
+        // vehicle's own value is one the table can name, the table plainly does
+        // describe it — the two fields have simply drifted apart, which is the
+        // state a wrong or partial write leaves behind and the state a correct
+        // write repairs. Calling that a disagreement wedged the tool with no way
+        // out, because the one action that fixes it is the write this check
+        // forbids. It happened on the real vehicle: a bad write set the capacity
+        // registers to 20000 while the profile byte still read 0x50.
+        if BfgProfileCatalog.isTabulated(reported) { return .inconclusive }
+
+        return .disagrees(expected: expected, reported: reported)
     }
 
     // MARK: - Serialisation

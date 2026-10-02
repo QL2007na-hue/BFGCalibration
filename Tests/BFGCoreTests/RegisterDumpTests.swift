@@ -94,12 +94,37 @@ final class RegisterDumpTests: XCTestCase {
         XCTAssertEqual(d.agreement(), .agrees)
     }
 
-    /// The case that matters: the table says one thing and the vehicle holds
-    /// another, so writing from the table would put the wrong capacity on it.
-    func testDisagreementIsDetected() {
-        let d = dump([entry(0x10, 0x00, 0x51), entry(0x10, 0x1C, 18000)])
+    /// The case that matters: the vehicle holds a capacity the table cannot
+    /// name, so the table does not describe this firmware and writing from it
+    /// would put the wrong capacity on the vehicle.
+    func testDisagreementIsDetectedWhenTheVehicleIsOffTable() {
+        let d = dump([entry(0x10, 0x00, 0x51), entry(0x10, 0x1C, 21000)])
         XCTAssertEqual(d.agreement(),
-                       .disagrees(expected: 26000, reported: 18000))
+                       .disagrees(expected: 26000, reported: 21000))
+    }
+
+    /// The state the real vehicle was in and the reason this rule had to change:
+    /// its profile byte still read 0x50 (26000 on this table) while its capacity
+    /// registers read 20000 — a value the table names, index 0. That is a drifted
+    /// pair, not a foreign firmware, and refusing there left no way out: the only
+    /// action that repairs the vehicle is the write the refusal forbids.
+    func testDriftedButTabulatedCapacityIsNotADisagreement() {
+        let d = dump([entry(0x10, 0x00, 0x50), entry(0x10, 0x1C, 0),
+                      entry(0x10, 0x0E, 20000)])
+        XCTAssertEqual(d.agreement(), .inconclusive)
+    }
+
+    /// 20000 is index 0 of the table, so it is a capacity the table can name.
+    func testTabulatedCapacitiesAreRecognised() {
+        XCTAssertTrue(BfgProfileCatalog.isTabulated(20000))
+        XCTAssertTrue(BfgProfileCatalog.isTabulated(26000))
+        XCTAssertTrue(BfgProfileCatalog.isTabulated(46000))
+        // The table's one voltage-specific exception.
+        XCTAssertTrue(BfgProfileCatalog.isTabulated(24500))
+        XCTAssertFalse(BfgProfileCatalog.isTabulated(21000))
+        XCTAssertFalse(BfgProfileCatalog.isTabulated(50000))
+        XCTAssertFalse(BfgProfileCatalog.isTabulated(0))
+        XCTAssertFalse(BfgProfileCatalog.isTabulated(-1))
     }
 
     func testAgreementIsInconclusiveWithoutBothReadings() {

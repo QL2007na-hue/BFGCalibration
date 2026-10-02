@@ -55,6 +55,20 @@ public enum BfgProfileCatalog {
         return -1
     }
 
+    /// Whether a capacity is one this table can name at all.
+    ///
+    /// Used to tell two very different situations apart. A vehicle whose capacity
+    /// registers hold a *tabulated* value is one this table describes — its
+    /// profile byte and its capacity registers have simply drifted apart, which
+    /// is what a wrong or partial write leaves behind and what a correct write
+    /// repairs. A vehicle holding a value the table cannot name is one the table
+    /// genuinely does not describe, and writing from it would put the wrong
+    /// capacity on the vehicle.
+    public static func isTabulated(_ milliAh: Int) -> Bool {
+        guard milliAh > 0 else { return false }
+        return milliAh == 24500 || coreByIndex.contains(milliAh)
+    }
+
     /// The byte that actually goes on the wire for a picker choice.
     ///
     /// The two are not the same thing and confusing them is silent: the table
