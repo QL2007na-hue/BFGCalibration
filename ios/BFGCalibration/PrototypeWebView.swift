@@ -1393,7 +1393,11 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         pushState()
 
         guard result.writeCommandSent else {
-            goTo("home")
+            // A plain read ends on the page that shows what was read *and* carries
+            // the write entry. It used to return home, which has neither: the
+            // rider saw a successful connection and then nothing, and the write
+            // flow was unreachable — reported, correctly, as "there is no option".
+            goTo("review")
             return
         }
         guard result.profileReadbackVerified || result.disConfigReadbackVerified else {
