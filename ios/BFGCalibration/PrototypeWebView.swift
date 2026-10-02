@@ -1323,7 +1323,10 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
     private func persistDiagnosticIfActive() {
         guard !diagnosticLog.isEmpty else { return }
         let now = Date()
-        guard now.timeIntervalSince(lastPersist) > 2 else { return }
+        // Six seconds, not two: the buffer now holds twenty thousand lines, and
+        // re-joining a megabyte of text every couple of seconds while a sweep is
+        // running is work the main thread cannot spare.
+        guard now.timeIntervalSince(lastPersist) > 6 else { return }
         lastPersist = now
         let text = diagnosticReport()
         let url = Self.documentsDirectory().appendingPathComponent("bfg-diagnostic.txt")
@@ -1350,8 +1353,15 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         // frame: those lines are the only evidence a real vehicle leaves behind,
         // and a truncated log is the same as no log when the break is early.
         diagnosticLog.append(line)
-        if diagnosticLog.count > 4000 {
-            diagnosticLog.removeFirst(diagnosticLog.count - 4000)
+        // 4000 was not enough. A single pre-write sweep emits one line per frame —
+        // well over a thousand — so a failed write followed by "export a snapshot"
+        // pushed the failure itself out of the buffer. That is exactly what
+        // happened on the real vehicle: the log arrived with no write frame and no
+        // read-back sequence in it, and the question it was sent to answer could
+        // not be answered. The bound exists only to stop unbounded growth; the
+        // export is written to a file, so size costs nothing that matters.
+        if diagnosticLog.count > 20000 {
+            diagnosticLog.removeFirst(diagnosticLog.count - 20000)
         }
         persistDiagnosticIfActive()
     }
