@@ -531,7 +531,8 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
                 return
             }
             guard backupStore.firstBackup(serial: serial).valid else {
-                writeFailure("所选容量未适配或原参数备份未完成，请重新读取车辆数据。")
+                writeFailure("首次原参数备份尚未建立，本次没有发送写入指令。"
+                    + "请先返回连接车辆读取一次，再回来写入。")
                 return
             }
         }
@@ -1392,6 +1393,26 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         state["scanReplies"] = result.registerScanReplies
         state["scanTimeouts"] = result.registerScanTimeouts
         state["busyMessage"] = NSNull()
+
+        // The permanent backups have to exist before a write can even be
+        // considered: requestWrite refuses without a first-parameter backup, and
+        // that backup was only ever created inside the pre-write snapshot — which
+        // happens *after* that refusal. On a vehicle that had never been written
+        // the check could therefore never pass and the entire write path was
+        // unreachable, which is exactly how it behaved on the real vehicle.
+        //
+        // A plain read is the right moment to establish them: it is the only
+        // point where the original values are read with no write in flight. Both
+        // calls fill an empty slot only and never overwrite, so a later read can
+        // never turn a genuine original into a post-write value — and the
+        // dashboard backup has to exist before any dashboard write, or that
+        // write would have no way back.
+        if result.profileRaw >= 0, result.displayBeforeCapacity > 0 {
+            backupStore.saveFirstBackupIfAbsent(serial: result.serial,
+                                                profile: result.profileRaw,
+                                                capacity: result.displayBeforeCapacity)
+        }
+        backupStore.saveDisConfigBackupIfAbsent(serial: result.serial, raw: result.disConfigRaw)
         refreshBackupState(serial: result.serial)
 
         // "Last confirmed" is deliberately NOT recorded here. A write's own
