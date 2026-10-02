@@ -22,15 +22,15 @@
 
 <style>
   #bfg-ui-prototype {
-    --nb-accent: #2f7cf6;
-    --nb-radius: 22px;
+    --nb-accent: #2f9e7f;
+    --nb-radius: 14px;
     --nb-bg: #f4f7fb;
     --nb-surface: #ffffff;
     --nb-surface-2: #eef4fd;
     --nb-surface-3: #f8fafc;
     --nb-text: #12213c;
     --nb-muted: #64748b;
-    --nb-line: #dce5f0;
+    --nb-line: #d8e3e0;
     --nb-success: #149a62;
     --nb-success-bg: #e9f8f1;
     --nb-warning: #bd6b0b;
@@ -38,8 +38,8 @@
     --nb-danger: #d44747;
     --nb-danger-bg: #fff0f0;
     --nb-shadow: 0 22px 70px rgba(33, 56, 91, .17);
-    --nb-accent-soft: rgba(47, 124, 246, .18);
-    --nb-glow: 0 10px 30px rgba(47, 124, 246, .28);
+    --nb-accent-soft: rgba(47, 158, 127, .16);
+    --nb-glow: 0 10px 30px rgba(47, 158, 127, .26);
     --nb-hairline: rgba(255, 255, 255, .85);
     color-scheme: light dark;
     width: 100%;
@@ -47,15 +47,15 @@
   #bfg-ui-prototype[data-dark="true"] {
     /* Deep, cool blacks with a faint blue cast. Surfaces step up in even
        increments so card edges read without needing heavy borders. */
-    --nb-bg: #05090f;
-    --nb-surface: #0c1320;
-    --nb-surface-2: #131d2e;
+    --nb-bg: #08090B;
+    --nb-surface: #0F1215;
+    --nb-surface-2: #161A1E;
     --nb-surface-3: #090f1a;
-    --nb-text: #e9f1ff;
-    --nb-muted: #8296b3;
-    --nb-line: #1d2b42;
-    --nb-accent: #3d8bff;
-    --nb-accent-soft: rgba(61, 139, 255, .16);
+    --nb-text: #EDEFF2;
+    --nb-muted: #98A1AC;
+    --nb-line: rgba(255,255,255,.075);
+    --nb-accent: #4FD1AE;
+    --nb-accent-soft: rgba(79, 209, 174, .14);
     --nb-success: #34d399;
     --nb-success-bg: #0d2a22;
     --nb-warning: #fbbf5b;
@@ -64,7 +64,7 @@
     --nb-danger-bg: #2e1618;
     --nb-shadow: 0 24px 70px rgba(0, 0, 0, .55);
     /* Ring + halo used by primary actions and the SOC gauge. */
-    --nb-glow: 0 10px 30px rgba(61, 139, 255, .30);
+    --nb-glow: 0 10px 30px rgba(79, 209, 174, .24);
     --nb-hairline: rgba(255, 255, 255, .06);
   }
   #bfg-ui-prototype * { box-sizing: border-box; }
@@ -101,7 +101,7 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    border-radius: 38px;
+    border-radius: 18px;
     background: var(--nb-bg);
     color: var(--nb-text);
     box-shadow: var(--nb-shadow);
@@ -181,10 +181,10 @@
     padding: 16px; border-radius: var(--nb-radius); border: 1px solid var(--nb-line);
     background: var(--nb-surface); color: var(--nb-text); font: inherit;
   }
-  #bfg-ui-prototype .nb-action.is-primary { background: var(--nb-accent); color: #fff; border-color: transparent; }
+  #bfg-ui-prototype .nb-action.is-primary { background: var(--nb-accent); color: #06110E; border-color: transparent; }
   #bfg-ui-prototype .nb-action-icon {
     width: 46px; height: 46px; flex: 0 0 46px; display: grid; place-items: center;
-    border-radius: 15px; background: rgba(47, 124, 246, .12);
+    border-radius: 15px; background: rgba(79, 209, 174, .13);
   }
   #bfg-ui-prototype .nb-action-icon svg { width: 23px; height: 23px; }
   #bfg-ui-prototype .nb-action-copy { flex: 1; }
@@ -218,7 +218,7 @@
     min-height: 52px; width: 100%; border-radius: 17px; padding: 13px 16px; font: inherit; font-weight: 500;
   }
   #bfg-ui-prototype .nb-primary {
-    border: 0; color: #fff;
+    border: 0; color: #06110E;
     background-image: linear-gradient(180deg, rgba(255, 255, 255, .18), rgba(255, 255, 255, 0) 58%);
     background-color: var(--nb-accent);
     box-shadow: var(--nb-glow);
@@ -322,10 +322,10 @@
   }
   #bfg-ui-prototype .nb-modal-layer {
     position: absolute; inset: 0; display: flex; align-items: flex-end; padding: 16px; z-index: 4;
-    background: rgba(4, 10, 20, .55); border-radius: 37px;
+    background: rgba(4, 10, 20, .55); border-radius: 18px;
   }
   #bfg-ui-prototype .nb-modal {
-    width: 100%; padding: 20px; border-radius: 25px; background: var(--nb-surface); color: var(--nb-text);
+    width: 100%; padding: 20px; border-radius: 18px; background: var(--nb-surface); color: var(--nb-text);
     box-shadow: 0 16px 60px rgba(0,0,0,.28); max-height: calc(100dvh - 32px);
     overflow-y: auto; overscroll-behavior: contain; box-sizing: border-box;
   }
@@ -344,12 +344,12 @@
   @keyframes nb-spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { #bfg-ui-prototype .nb-progress-ring { animation: none; } }
   @media (max-width: 370px) {
-    #bfg-ui-prototype .nb-phone { border-radius: 28px; }
+    #bfg-ui-prototype .nb-phone { border-radius: 18px; }
     #bfg-ui-prototype .nb-content { padding-left: 14px; padding-right: 14px; }
     #bfg-ui-prototype .nb-grid-3 { gap: 6px; }
     #bfg-ui-prototype .nb-metric { padding-left: 6px; padding-right: 6px; }
     #bfg-ui-prototype .nb-capacities { grid-template-columns: repeat(3, 1fr); }
-    #bfg-ui-prototype .nb-modal-layer { border-radius: 27px; }
+    #bfg-ui-prototype .nb-modal-layer { border-radius: 18px; }
   }
   html, body { margin: 0; min-height: 100%; background: #f4f7fb;
     /* iOS inflates text on its own unless this is pinned; the page sets its
@@ -376,6 +376,68 @@
   #bfg-ui-prototype .nb-mode[disabled], #bfg-ui-prototype .nb-capacity[disabled], #bfg-ui-prototype .nb-secondary[disabled] { opacity: .45; cursor: not-allowed; }
   #bfg-ui-prototype button { touch-action: manipulation; }
   #bfg-ui-prototype .nb-voltages, #bfg-ui-prototype .nb-capacities { position: relative; z-index: 2; }
+
+/* ─────────────────────────────────────────────────────────────
+   动效层：触摸反馈 / 错峰进场 / 页面切换 / 状态过渡
+   只动 transform 与 opacity，不触发 layout；全部走自定义缓动。
+   ───────────────────────────────────────────────────────────── */
+:root{
+  --nb-ease: cubic-bezier(.32,.72,0,1);
+  --nb-ease-out: cubic-bezier(.22,1,.36,1);
+}
+/* 触摸反馈：按下时轻微收缩，模拟物理按压 */
+.nb-action, .nb-primary, .nb-secondary, .nb-icon-btn, .nb-settings-btn,
+.nb-tab, .nb-pill, [data-action]{
+  -webkit-tap-highlight-color: transparent;
+  transition: transform .16s var(--nb-ease-out),
+              background-color .22s var(--nb-ease-out),
+              border-color .22s var(--nb-ease-out),
+              box-shadow .22s var(--nb-ease-out),
+              color .22s var(--nb-ease-out);
+}
+.nb-action:active, .nb-primary:active, .nb-secondary:active,
+.nb-icon-btn:active, .nb-settings-btn:active, .nb-tab:active{
+  transform: scale(.977);
+}
+/* 区块进场：同屏元素按 40ms 错峰，避免整屏一起弹出来 */
+@keyframes nb-rise{ from{ opacity:0; transform:translateY(10px) } to{ opacity:1; transform:none } }
+.nb-content > *{ animation: nb-rise .46s var(--nb-ease) backwards; }
+.nb-content > *:nth-child(1){ animation-delay: 20ms }
+.nb-content > *:nth-child(2){ animation-delay: 60ms }
+.nb-content > *:nth-child(3){ animation-delay: 100ms }
+.nb-content > *:nth-child(4){ animation-delay: 140ms }
+.nb-content > *:nth-child(5){ animation-delay: 180ms }
+.nb-content > *:nth-child(n+6){ animation-delay: 220ms }
+/* 页面切换：每次渲染都是新节点，动画会自动重放 */
+@keyframes nb-page-in{ from{ opacity:0; transform:translateY(7px) } to{ opacity:1; transform:none } }
+.nb-page{ animation: nb-page-in .40s var(--nb-ease) }
+/* 状态徽标：连接中 → 已连接 之类的状态切换要有过渡，不能瞬间跳 */
+.nb-badge{ transition: color .3s var(--nb-ease-out), background-color .3s var(--nb-ease-out) }
+/* 进度：数值变化时平滑推进 */
+.nb-progress i, .nb-bar i{
+  transition: transform .45s var(--nb-ease)
+}
+/* 列表项：逐条进入，长列表也不会一次糊上来 */
+@keyframes nb-row-in{ from{ opacity:0; transform:translateY(6px) } to{ opacity:1; transform:none } }
+.nb-info-row{ animation: nb-row-in .40s var(--nb-ease) backwards }
+.nb-info-row:nth-child(1){ animation-delay: 30ms }
+.nb-info-row:nth-child(2){ animation-delay: 70ms }
+.nb-info-row:nth-child(3){ animation-delay: 110ms }
+.nb-info-row:nth-child(4){ animation-delay: 150ms }
+.nb-info-row:nth-child(n+5){ animation-delay: 190ms }
+/* 弹层 / 提示 */
+@keyframes nb-pop{ from{ opacity:0; transform:scale(.96) translateY(6px) } to{ opacity:1; transform:none } }
+.nb-modal-card, .nb-sheet, .nb-pop{ animation: nb-pop .34s var(--nb-ease) }
+/* 加载态：保留原有转圈，补一层淡入 */
+@keyframes nb-fade{ from{ opacity:0 } to{ opacity:1 } }
+.nb-loading, .nb-spinner{ animation: nb-fade .3s var(--nb-ease), nb-spin .9s linear infinite }
+/* 减弱动态：去掉位移，保留透明度反馈（不是全部关掉） */
+@media (prefers-reduced-motion: reduce){
+  .nb-content > *, .nb-page, .nb-info-row, .nb-modal-card, .nb-sheet, .nb-pop{
+    animation-duration: .01ms !important; animation-delay: 0ms !important
+  }
+  .nb-action:active, .nb-primary:active, .nb-secondary:active{ transform:none }
+}
 </style>
 
 <script>
@@ -444,7 +506,7 @@ globalThis.lucide = {createIcons() {
     result: initial.result === 'failure' ? 'failure' : initial.result === 'success' ? 'success' : null,
     modal: null,
     radius: 22,
-    accent: '#2f7cf6',
+    accent: '#4FD1AE',
     compact: false
   };
 
@@ -1091,5 +1153,14 @@ globalThis.lucide = {createIcons() {
     tweak.addToggle(state, 'compact', { label: '紧凑排版', reference: 'layout.compact' });
   }
 })();
+
+  // 调试用：?screen=review 直接打开指定页面（bfgNativeGo 本就暴露给原生，这里只是给它一个 URL 入口）
+  (function(){
+    var m = location.search.match(/[?&]screen=([\w-]+)/);
+    if(!m || !window.bfgNativeGo) return;
+    addEventListener('load', function(){ setTimeout(function(){
+      try { window.bfgNativeGo(m[1]); } catch(e) {}
+    }, 80); });
+  })();
 </script>
 </body></html>
