@@ -978,8 +978,8 @@ globalThis.lucide = {createIcons() {
     const actionEl = event.target.closest('[data-action]');
     if (!actionEl) return;
     const action = actionEl.dataset.action;
-    if (action === 'home') { if (window.BfgNative) nativeAction('cancel'); if (window.BfgNative && state.screen === 'write-progress') return; state.result = null; go('home'); }
-    else if (action === 'back') { if (state.screen === 'post-write-check') return; if (window.BfgNative && state.screen.endsWith('progress')) nativeAction('cancel'); if (window.BfgNative && state.screen === 'write-progress') return; go(state.screen === 'scan-result' || state.screen === 'scan-progress' ? 'settings' : state.screen === 'write' ? 'review' : 'home'); }
+    if (action === 'home') { if (window.BfgNative) nativeAction('cancel'); state.result = null; go('home'); }
+    else if (action === 'back') { if (state.screen === 'post-write-check') return; if (window.BfgNative && state.screen.endsWith('progress')) nativeAction('cancel'); go(state.screen === 'scan-result' || state.screen === 'scan-progress' ? 'settings' : (state.screen === 'write' || state.screen === 'write-progress') ? 'review' : 'home'); }
     else if (action === 'vehicles' || action === 'settings') { go(action); }
     else if (action === 'select-vehicle') { state.selectedVehicleIndex = Number(actionEl.dataset.index); if (window.BfgNative) nativeAction('select-vehicle', String(state.selectedVehicleIndex)); go('home'); }
     else if (action === 'refresh-vehicles') { if (window.BfgNative) nativeAction('refresh-vehicles'); }

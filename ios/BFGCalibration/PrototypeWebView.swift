@@ -126,6 +126,8 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     private var allowReadOnlySerialWrite = false
     /// The write request parked on that confirmation, replayed once it is given.
     private var pendingReadOnlySerialRequest: String?
+    /// Throttle for the on-disk copy of the diagnostic trail.
+    private var lastPersist = Date.distantPast
     /// A dashboard write parked on the unvalidated-encoding warning.
     private var pendingUnverified: PendingWrite?
 
@@ -301,10 +303,11 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "cancel":
             // Captured before the teardown: whether this cancel aborted a write
             // flow decides where the rider has to land.
+            let wroteAnything = activeOperation == .writeProfile
+                || activeOperation == .writeDisVoltage
             let abortedWriteFlow = pendingWrite != nil
                 || dumpPurpose == .preWrite
-                || activeOperation == .writeProfile
-                || activeOperation == .writeDisVoltage
+                || wroteAnything
             client?.cancel()
             client = nil
             dumpPurpose = nil
@@ -319,7 +322,12 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
             // the rider could not reach settings, could not export the log and
             // could not get home. A cancel has to end somewhere final and say so.
             if abortedWriteFlow {
-                state["errorMessage"] = "已取消；本次没有发送任何写入指令，车辆参数未改变。"
+                // Accurate in both directions: before the write frame goes out we
+                // can promise nothing was written; once it may have gone out we
+                // must not.
+                state["errorMessage"] = wroteAnything
+                    ? "已取消。写入指令可能已经发出，请重新读取车辆参数确认当前配置后再决定下一步。"
+                    : "已取消；本次没有发送任何写入指令，车辆参数未改变。"
                 state["screen"] = "review"
                 state["modal"] = "operation-failed"
             }
@@ -1237,6 +1245,27 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
+    /// Keeps a copy of the trail on disk while a run is in flight.
+    ///
+    /// The log lives in memory and only the settings screen can export it, so a
+    /// run that stalls somewhere it cannot be left takes its own evidence with
+    /// it: the rider is stuck on a spinner, cannot reach settings, and a force
+    /// quit erases everything. Writing it out as the run proceeds means the file
+    /// in Documents is always the story so far — reachable from the Files app
+    /// even while the UI is wedged. Throttled, because the transport logs two
+    /// lines per frame.
+    private func persistDiagnosticIfActive() {
+        guard !diagnosticLog.isEmpty else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastPersist) > 2 else { return }
+        lastPersist = now
+        let text = diagnosticReport()
+        let url = Self.documentsDirectory().appendingPathComponent("bfg-diagnostic.txt")
+        DispatchQueue.global(qos: .utility).async {
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
     private func handleStatus(_ status: String) {
         state["busyMessage"] = status
         // Status lines are the only record of *how far* a run got. Without them
@@ -1258,6 +1287,7 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         if diagnosticLog.count > 4000 {
             diagnosticLog.removeFirst(diagnosticLog.count - 4000)
         }
+        persistDiagnosticIfActive()
     }
 
     private func handleFinish(_ result: BfgBleClient.Result) {
