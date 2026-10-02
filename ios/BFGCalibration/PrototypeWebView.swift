@@ -369,6 +369,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "open-bluetooth-settings":
             openSystemSettings()
 
+        case "open-website":
+            openWebsite()
+
         case "screen", "modal-state", "select-vehicle":
             // Purely presentational, and the page already handled it locally.
             // `screen`/`modal-state` are the page reporting its own navigation
@@ -389,6 +392,12 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     /// opens the app's own settings, one tap from there.
     private func openSystemSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+
+    /// 打开官网。交给 Safari，因此不受 App 内 ATS 限制。
+    private func openWebsite() {
+        guard let url = URL(string: "http://8.137.15.226/9lz/") else { return }
         UIApplication.shared.open(url)
     }
 
