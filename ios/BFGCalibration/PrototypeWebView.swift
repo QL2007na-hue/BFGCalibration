@@ -1407,8 +1407,16 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         state["capacityByVoltage"] = options.byVoltage
         let shownProfile = wrote && result.afterProfile >= 0 ? result.afterProfile : result.profileRaw
         if shownProfile >= 0 {
-            state["voltage"] = BfgProfileCatalog.nominalVoltage(shownProfile)
-            state["capacity"] = Double(BfgProfileCatalog.expectedCore(shownProfile)) / 1000
+            // These are the *vehicle's* values, not the rider's choice — they must
+            // not travel under the same keys. They used to be pushed as
+            // voltage/capacity, which is exactly where the write page keeps the
+            // selection, so every status push after the confirmation overwrote the
+            // choice with the vehicle's current value. The frame had already been
+            // built from the real choice, so the write was correct while the screen
+            // said otherwise: a 46Ah write displayed as 26Ah on the real vehicle and
+            // looked like the tool had written the wrong capacity.
+            state["vehicleVoltage"] = BfgProfileCatalog.nominalVoltage(shownProfile)
+            state["vehicleCapacity"] = Double(BfgProfileCatalog.expectedCore(shownProfile)) / 1000
         }
 
         state["scanReplies"] = result.registerScanReplies

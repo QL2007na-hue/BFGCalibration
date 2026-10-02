@@ -1026,7 +1026,20 @@ globalThis.lucide = {createIcons() {
     else if (action === 'write-gate-cancel') { state.writeGate = null; state.modal = null; render(); save(); if (window.BfgNative) nativeAction('write-gate-cancel'); }
     else if (action === 'begin-pair') completeConnection(true);
     else if (action === 'begin-connect') completeConnection(false);
-    else if (action === 'write') go('write');
+    else if (action === 'write') {
+      // Seed the pickers from what the vehicle holds now. vehicleVoltage and
+      // vehicleCapacity are deliberately separate keys from voltage/capacity,
+      // which hold the rider's choice: sharing them meant every native status
+      // push reset the choice mid-flow, so the confirmation screen showed the
+      // value the rider picked and the progress screen showed something else.
+      if (state.vehicleVoltage) {
+        state.voltage = state.vehicleVoltage;
+        const opts = state.capacityByVoltage[String(state.voltage)];
+        if (Array.isArray(opts) && opts.length) state.availableCapacities = opts;
+      }
+      if (state.vehicleCapacity) state.capacity = state.vehicleCapacity;
+      go('write');
+    }
     else if (action === 'refresh-review') { state.result = null; go('connect-progress'); if (window.BfgNative) nativeAction('refresh-read'); }
     else if (action === 'confirm-write') {
       if (state.writeType === 'dashboard' && !state.dashboardWriteSupported) return;
