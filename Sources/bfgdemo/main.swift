@@ -354,19 +354,24 @@ do {
     }
 }
 
-// MARK: - 14b. 桩位与容量脱节但容量在表内：不得判成"表不适用"
+// MARK: - 14b. 数值重叠但表不适用：仍必须判不一致
 
 do {
-    // 复刻真机数字：档位字节仍是 0x50（表说 26000），容量寄存器却是 20000 ——
-    // 20000 正是表里索引 0 的值。这种"脱节"必须放行，否则修复它的写入会被自己挡住。
+    // 复刻真机数字：档位字节 0x50（表说 26000），容量寄存器 20000 —— 而 20000 恰好
+    // 是本表索引 0 的值。曾经有一版据此放行，结果那次写入把车的容量改成了没人要
+    // 求的数字（真机实测：表说 0xC0 = 46000，车回 26000）。
+    // 数值重叠不等于两张表一致 —— 判不一致才是正确的。
     let vehicle = makeVehicle { $0.capacityMah = 20000 }
-    run("静态表一致性：脱节但容量在表内时必须放行", vehicle: vehicle,
+    run("静态表一致性：数值重叠但仍不符时必须判不一致", vehicle: vehicle,
         operation: .dumpRegisters, store: pairedStore, timeout: 300,
         dumpModules: [RegisterDump.meterModule]) { c, _ in
         if let f = c.failure { return "失败：\(f)" }
         guard let r = c.finished, let dump = r.registerDump else { return "未产出快照" }
-        guard dump.agreement() == .inconclusive else {
-            return "应放行（inconclusive），实际 \(dump.agreement())"
+        guard case .disagrees(let expected, let reported) = dump.agreement() else {
+            return "应判为不一致，实际 \(dump.agreement())"
+        }
+        guard expected == 26000, reported == 20000 else {
+            return "不一致详情不符：期望 26000 / 实际 \(reported)"
         }
         return nil
     }

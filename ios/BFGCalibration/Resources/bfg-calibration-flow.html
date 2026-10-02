@@ -893,6 +893,7 @@ globalThis.lucide = {createIcons() {
       'scan-unavailable': ['triangle-alert', '扫描未完成', state.errorMessage || '请检查车辆连接后再试。', '我知道了', 'close-modal', '', ''],
       'read-advisory': ['triangle-alert', '读取结果仅供参考', state.errorMessage || '请核对车辆实际配置。', '我知道了', 'close-modal', '', ''],
       'unverified-dis': ['triangle-alert', '仪表配置尚未验证', state.errorMessage || '这组仪表配置尚无实车验证，请确认可以恢复原参数后继续。', '仍要尝试写入', 'confirm-unverified-dis', '取消', 'close-modal'],
+      'offtable-write': ['triangle-alert', '本车型的容量映射与静态表不同', state.errorMessage || '照表写入得不到你选的容量。', '我已知晓，仍要写入', 'confirm-offtable-write', '取消', 'close-modal'],
       'nserial-write': ['triangle-alert', '该车辆序列号以 N 开头', state.errorMessage || '原版工具把 N 开头的序列号一律视为只读。只有在你确认这是本人的车辆后才应继续。', '我确认，放开本次写入', 'confirm-nserial-write', '取消', 'close-modal']
     };
     const item = specs[kind];
@@ -1017,6 +1018,7 @@ globalThis.lucide = {createIcons() {
     else if (action === 'post-write-reread') { state.modal = null; go('post-write-check'); if (window.BfgNative) nativeAction('post-write-reread'); }
     else if (action === 'confirm-unverified-dis') { state.modal = null; state.writeStage = 'precheck'; go('write-progress'); if (window.BfgNative) nativeAction('confirm-unverified-dis'); }
     else if (action === 'confirm-nserial-write') { state.modal = null; state.writeStage = 'precheck'; go('write-progress'); if (window.BfgNative) nativeAction('confirm-nserial-write'); }
+    else if (action === 'confirm-offtable-write') { state.modal = null; state.writeStage = 'precheck'; go('write-progress'); if (window.BfgNative) nativeAction('confirm-offtable-write'); }
     else if (action === 'write-gate-confirm') {
       const box = document.getElementById('write-gate-check');
       const confirmButton = document.getElementById('write-gate-confirm');

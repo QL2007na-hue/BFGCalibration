@@ -181,20 +181,22 @@ public struct RegisterDump: Codable, Equatable {
         } else {
             return .inconclusive
         }
-        if expected == reported { return .agrees }
-
-        // The profile byte and the capacity registers disagree. That is not
-        // automatically "this table does not describe your firmware": when the
-        // vehicle's own value is one the table can name, the table plainly does
-        // describe it — the two fields have simply drifted apart, which is the
-        // state a wrong or partial write leaves behind and the state a correct
-        // write repairs. Calling that a disagreement wedged the tool with no way
-        // out, because the one action that fixes it is the write this check
-        // forbids. It happened on the real vehicle: a bad write set the capacity
-        // registers to 20000 while the profile byte still read 0x50.
-        if BfgProfileCatalog.isTabulated(reported) { return .inconclusive }
-
-        return .disagrees(expected: expected, reported: reported)
+        // A vehicle whose capacity registers hold a different value is one this
+        // table does not describe, and writing from the table puts the wrong
+        // capacity on it. That is measured, not hypothetical: on the real vehicle
+        // the table calls 0x50 26000mAh while the vehicle holds 20000, and calls
+        // 0xC0 46000mAh while the vehicle answered a 0xC0 write with 26000mAh.
+        //
+        // An earlier revision let such a vehicle through whenever the value it
+        // reported happened to be tabulated — 20000 is index 0 of this table —
+        // and that waved through exactly the write which set the vehicle's
+        // capacity to a number nobody asked for. Being tabulated is not evidence
+        // that the two tables agree; it only means the numbers overlap.
+        //
+        // Refusing here is therefore correct. The escape hatch belongs to the
+        // caller, where it can be shown to the owner in numbers and approved
+        // explicitly (see the pre-write table check in the coordinator).
+        return expected == reported ? .agrees : .disagrees(expected: expected, reported: reported)
     }
 
     // MARK: - Serialisation

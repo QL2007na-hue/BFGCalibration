@@ -128,6 +128,11 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     /// given. A closure rather than a replayed value, because two different flows
     /// — a parameter write and a restore — can be the thing being confirmed.
     private var pendingSerialWaivedAction: (() -> Void)?
+    /// Set for one write flow after the owner approves writing a profile byte the
+    /// static table does not agree with. See the pre-write table check.
+    private var offTableApproved = false
+    /// The pre-write snapshot parked on that approval, replayed once it is given.
+    private var pendingOffTableDump: RegisterDump?
     /// Throttle for the on-disk copy of the diagnostic trail.
     private var lastPersist = Date.distantPast
     /// A dashboard write parked on the unvalidated-encoding warning.
@@ -285,6 +290,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
 
         case "confirm-nserial-write":
             confirmReadOnlySerialWrite()
+
+        case "confirm-offtable-write":
+            confirmOffTableWrite()
 
         case "restore-first":
             requestRestore(first: true)
@@ -467,6 +475,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         // validated them. That is a default, not a property of this vehicle, and
         // the owner is the one who can tell the difference — so ask once, state
         // the consequence, and keep every other rail in place.
+        // One approval covers one write flow, never the session.
+        offTableApproved = false
+        pendingOffTableDump = nil
         if WriteAccessPolicy.isReadOnlySerial(serial), !allowReadOnlySerialWrite {
             pendingSerialWaivedAction = { [weak self] in self?.requestWrite(value: value) }
             state["errorMessage"] = "该车辆序列号以 N 开头。原版工具把这类序列号一律视为只读，"
@@ -557,6 +568,21 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
                                     restoreLabel: nil,
                                     expectedDisConfigRaw: lastRead.disConfigRaw)
         beginPreWriteRead()
+    }
+
+    /// The owner's answer to "this table does not describe your vehicle".
+    ///
+    /// Replays the parked pre-write branch with the same snapshot. The approval
+    /// flag carries it past the table check and on to the risk gate — the write
+    /// itself is unchanged, still one profile byte, still snapshotted first and
+    /// still compared afterwards.
+    private func confirmOffTableWrite() {
+        guard let dump = pendingOffTableDump else { return }
+        pendingOffTableDump = nil
+        offTableApproved = true
+        state["modal"] = NSNull()
+        pushState()
+        handleDump(dump, purpose: .preWrite)
     }
 
     /// The owner's answer to the read-only-serial default.
@@ -711,11 +737,23 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
             // The static table is an assumption about the firmware. If the
             // vehicle contradicts it, writing from the table would put the
             // wrong capacity on the vehicle — the failure that damages modules.
-            if !pending.isDashboard,
+            if !pending.isDashboard, !offTableApproved,
                case .disagrees(let expected, let reported) = dump.agreement() {
-                writeFailure("车辆当前档位与容量表不一致（表 \(expected)mAh / 车 \(reported)mAh），"
-                    + "该表不适用于本车固件。照表写入会写错容量，已停止。"
-                    + "请导出寄存器快照用于适配本车型。")
+                // Refusing outright is right for someone who simply wants their
+                // battery set, but it leaves no way to *establish* the real
+                // mapping — and for a model the author never saw, that mapping is
+                // the whole problem. So state the discrepancy in numbers, park the
+                // write, and let the owner decide. Nothing else is relaxed: the
+                // snapshot is already taken, the risk gate still runs, and the
+                // result is still compared afterwards and can be rolled back.
+                pendingOffTableDump = dump
+                state["errorMessage"] = "本车型的容量映射与静态表不同：表把档位 0x"
+                    + String(format: "%02X", pending.profile) + " 读作 \(expected)mAh，"
+                    + "你的车报的是 \(reported)mAh。照表写入得不到你选的容量，"
+                    + "车会按它自己的表来解释这个档位编号。"
+                    + "继续的话仍然只写一个档位字节：写前快照已保存，风险门与写后全量比对照常，随时可回滚。"
+                state["modal"] = "offtable-write"
+                pushState()
                 return
             }
 

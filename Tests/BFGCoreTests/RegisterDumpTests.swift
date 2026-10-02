@@ -103,15 +103,15 @@ final class RegisterDumpTests: XCTestCase {
                        .disagrees(expected: 26000, reported: 21000))
     }
 
-    /// The state the real vehicle was in and the reason this rule had to change:
-    /// its profile byte still read 0x50 (26000 on this table) while its capacity
-    /// registers read 20000 — a value the table names, index 0. That is a drifted
-    /// pair, not a foreign firmware, and refusing there left no way out: the only
-    /// action that repairs the vehicle is the write the refusal forbids.
-    func testDriftedButTabulatedCapacityIsNotADisagreement() {
+    /// Measured on the real vehicle: the table calls 0x50 26000mAh while the
+    /// vehicle holds 20000mAh. 20000 being index 0 of this table does NOT make the
+    /// two agree — it only means the numbers overlap. An earlier revision treated
+    /// overlap as agreement, and that waved through the very write which set the
+    /// vehicle's capacity to a number nobody asked for (0xC0 answered as 26000).
+    func testOverlappingCapacityIsStillADisagreement() {
         let d = dump([entry(0x10, 0x00, 0x50), entry(0x10, 0x1C, 0),
                       entry(0x10, 0x0E, 20000)])
-        XCTAssertEqual(d.agreement(), .inconclusive)
+        XCTAssertEqual(d.agreement(), .disagrees(expected: 26000, reported: 20000))
     }
 
     /// 20000 is index 0 of the table, so it is a capacity the table can name.
