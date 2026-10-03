@@ -146,6 +146,7 @@ public final class BfgBleClient: NSObject {
         case waitDisConfig, waitDisWriteAck, waitDisAfter
         case waitCapacityCompatScan, waitRegisterScan, waitDumpScan
         case waitWriteAck, waitAfterProfile, waitAfterCapacity
+        case watchAfterWrite
         case done
     }
 
@@ -199,6 +200,26 @@ public final class BfgBleClient: NSObject {
     private static let queueKey = DispatchSpecificKey<UInt8>()
 
     private var timeoutWork: DispatchWorkItem?
+
+    // MARK: - Post-write watch
+    //
+    // The write path used to end the instant the byte read back correctly —
+    // which is exactly where the interesting part starts. On the real vehicle
+    // the write is accepted (WRITE_ACK), reads back as the target, and is then
+    // silently restored a few seconds later; because the client disconnected
+    // immediately afterwards, no export has ever contained the revert itself,
+    // only its aftermath. Re-reading the one byte while still connected turns
+    // "it goes back after a while" into "it went back at T+4.20s".
+    //
+    // Read-only: this re-sends NinebotFrame.readProfile and nothing else. No
+    // write frame is constructible from here, and targetProfile is only ever
+    // compared against, never re-sent.
+    private var watchTimer: DispatchWorkItem?
+    private var watchStart = DispatchTime.now()
+    private var watchChangedAt: Double = -1
+    private var watchLastValue = -1
+    private static let watchDuration: Double = 30
+    private static let watchInterval: Double = 0.5
     private let queue = DispatchQueue(label: "com.bfgtools.calibration.client")
 
     /// Modules to sweep for a register dump, in order.
@@ -412,6 +433,13 @@ public final class BfgBleClient: NSObject {
                 afterDisConfigRead()
             }
 
+        case .watchAfterWrite:
+            // One unanswered sample must not end the watch: the point is the
+            // shape of the value over thirty seconds, and a dropped reply is
+            // itself part of that shape.
+            log(String(format: "WATCH T+%6.2fs 回读无回复", watchElapsed()))
+            scheduleWatchTick(after: Self.watchInterval)
+
         case .waitDumpScan:
             // A silent address is a normal part of sweeping 256 of them.
             recordDumpTimeout(dumpModules[dumpModuleCursor], dumpIndex)
@@ -496,7 +524,8 @@ public final class BfgBleClient: NSObject {
                  .waitColorDisplayVersion, .waitCentreControllerVersion,
                  .waitDisConfig, .waitDisWriteAck, .waitDisAfter,
                  .waitCapacityCompatScan, .waitRegisterScan, .waitDumpScan,
-                 .waitWriteAck, .waitAfterProfile, .waitAfterCapacity:
+                 .waitWriteAck, .waitAfterProfile, .waitAfterCapacity,
+                 .watchAfterWrite:
                 try handleSessionReply(encrypted)
             default:
                 break
@@ -806,8 +835,7 @@ public final class BfgBleClient: NSObject {
                 // Compatibility mode has no trustworthy 0x1C to re-read; the
                 // expected core value for the profile is the confirmation.
                 result.resolvedAfterCapacityRaw = BfgProfileCatalog.expectedCore(targetProfile)
-                finish(String(format: "Profile 0x%02X 已通过%@回读确认。",
-                              targetProfile, CommunicationModeResolver.label(result.mode)))
+                beginProfileWatch()
                 return
             }
             state = .waitAfterCapacity
@@ -821,7 +849,16 @@ public final class BfgBleClient: NSObject {
             result.capacityReadbackVerified = true
             result.resolvedAfterCapacityRaw = result.afterCapacityRaw
             clearTimeout()
-            finish(String(format: "Profile 0x%02X 已写入并回读确认。", targetProfile))
+            beginProfileWatch()
+
+        case .watchAfterWrite:
+            // The same read the verify step used; here it is sampled on a
+            // timer instead of being asked once and abandoned.
+            let index = try requireReadAck(plain, src: 0x10, len: 8)
+            guard index == 0x00, plain.count >= 8 else { return }
+            clearTimeout()
+            recordWatchSample(Int(plain[7]))
+            scheduleWatchTick(after: Self.watchInterval)
 
         case .waitDisWriteAck:
             guard NinebotFrame.isFrame(plain, src: 0x01, dst: 0x3E, cmd: 0x05) else { return }
@@ -1304,6 +1341,71 @@ public final class BfgBleClient: NSObject {
                       profileVerifyAttempts, NinebotFrame.maxProfileVerifyAttempts))
         send(NinebotFrame.readProfile)
         timeout(.waitAfterProfile, 4.5, "写入后Profile回读无回复")
+    }
+
+    // MARK: - Post-write watch (read-only)
+
+    private func watchElapsed() -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- watchStart.uptimeNanoseconds)
+            / 1_000_000_000
+    }
+
+    /// Keeps the link up and re-reads register 0x00 until the window closes.
+    private func beginProfileWatch() {
+        watchStart = DispatchTime.now()
+        watchChangedAt = -1
+        watchLastValue = -1
+        state = .watchAfterWrite
+        log(String(format: "WATCH_BEGIN 写入已确认；保持连接 %g 秒，每 %g 秒只读回读 0x00",
+                   Self.watchDuration, Self.watchInterval))
+        status(String(format: "写入已确认；正在观察 %g 秒，看车辆会不会改回去…",
+                      Self.watchDuration))
+        scheduleWatchTick(after: Self.watchInterval)
+    }
+
+    private func scheduleWatchTick(after seconds: Double) {
+        watchTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.sendWatchRead() }
+        watchTimer = work
+        queue.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func sendWatchRead() {
+        guard !finished, state == .watchAfterWrite else { return }
+        if watchElapsed() >= Self.watchDuration {
+            endProfileWatch()
+            return
+        }
+        send(NinebotFrame.readProfile)
+        timeout(.watchAfterWrite, 2.0, "观察窗口回读无回复")
+    }
+
+    /// One sample. A change is logged the moment it is seen; sampling continues
+    /// to the end of the window so a revert that itself reverts cannot be missed.
+    private func recordWatchSample(_ value: Int) {
+        let now = watchElapsed()
+        var note = ""
+        if watchLastValue < 0 {
+            note = value == targetProfile ? " (= 目标值)" : " (≠ 目标值)"
+        } else if value != watchLastValue {
+            if watchChangedAt < 0 { watchChangedAt = now }
+            note = String(format: " ← 变化 0x%02X→0x%02X", watchLastValue, value)
+        }
+        watchLastValue = value
+        log(String(format: "WATCH T+%6.2fs profile=0x%02X%@", now, value, note))
+    }
+
+    private func endProfileWatch() {
+        watchTimer?.cancel()
+        watchTimer = nil
+        if watchChangedAt >= 0 {
+            finish(String(format:
+                "写入 0x%02X 生效过，但在 T+%.2fs 被车辆改回（观察 %g 秒）。详见日志 WATCH 行。",
+                targetProfile, watchChangedAt, Self.watchDuration))
+        } else {
+            finish(String(format: "写入 0x%02X 已确认并保持稳定 %g 秒。",
+                          targetProfile, Self.watchDuration))
+        }
     }
 
     private func requestCapacityVerification() {

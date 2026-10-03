@@ -111,6 +111,13 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     private var activeOperation: BfgBleClient.Operation = .readOnly
     /// Retained for the diagnostic export; the page only ever shows the last line.
     private var diagnosticLog: [String] = []
+    /// Start of the diagnostic timeline. Every question this log has been asked
+    /// is a *relative* one — "how long after the write did the value change
+    /// back" — and a wall clock answers that only after arithmetic, while a
+    /// clock adjustment mid-run can make the sequence run backwards. Monotonic,
+    /// so the deltas are always real.
+    private var logClock = DispatchTime.now()
+    private var logClockStarted = false
     /// Ticks the pairing screen's "seconds remaining" figure while a scan runs.
     private var scanCountdown: DispatchWorkItem?
     private var scanSecondsLeft = 0
@@ -1356,12 +1363,21 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
     private func handleLog(_ line: String) {
         // Surfaced through the page's log area when present.
         state["logLine"] = line
+        // Stamp every stored line with seconds since the first one. The real
+        // vehicle's one confirmed write was accepted, read back at the new
+        // value, and then silently reverted — and the export could not say
+        // *when*, so the revert could not be told apart from a slow write. A
+        // timestamp on each line is what makes "reverted at T+4.1s" a fact
+        // instead of a guess.
+        if !logClockStarted { logClockStarted = true; logClock = DispatchTime.now() }
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- logClock.uptimeNanoseconds) / 1_000_000_000
+        let stamped = String(format: "T+%8.2fs  %@", elapsed, line)
         // Bounded so a long session cannot grow without limit; the tail is the
         // part that matters when something went wrong. The bound is generous
         // because the BLE transport logs one line per write and per received
         // frame: those lines are the only evidence a real vehicle leaves behind,
         // and a truncated log is the same as no log when the break is early.
-        diagnosticLog.append(line)
+        diagnosticLog.append(stamped)
         // 4000 was not enough. A single pre-write sweep emits one line per frame —
         // well over a thousand — so a failed write followed by "export a snapshot"
         // pushed the failure itself out of the buffer. That is exactly what

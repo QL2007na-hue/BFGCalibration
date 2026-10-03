@@ -571,6 +571,10 @@ globalThis.lucide = {createIcons() {
   const visibleSn = () => state.connected ? maskedSn : (state.vehicleSn || '尚未选择车辆');
   const nativeAction = (action, value = '') => { if (window.BfgNative) window.BfgNative.action(action, String(value)); };
   let lastModalVisibility = null;
+  // 上一次渲染的视觉标识（screen + modal）。render() 每次都全量重建 innerHTML，
+  // 而 .nb-page / .nb-content > * 的入场动画会在新节点上自动重放；用它区分
+  // 「换页」与「同页数据刷新」，只有前者该播动画。
+  let lastVisualKey = null;
 
   function save() { /* State is supplied by the Android bridge. */ }
 
@@ -757,6 +761,13 @@ globalThis.lucide = {createIcons() {
         <div class="nb-progress-ring" role="progressbar" aria-label="二次核对中"></div>
         <h2 class="nb-title">二次核对中，请稍等</h2>
         <p>车辆可能需要约 5 秒更新参数。正在等待并重新读取实际配置，请保持车辆开机。</p>
+        <!-- 这个页面原先没有任何出口：返回键在点击链里被显式吞掉，一旦 BLE 卡住
+             等不到回读，骑手只能杀进程，连日志都导不出来。保留「核验中不要乱走」
+             的意图，但把两条生路还回来：导出诊断、取消返回。 -->
+        <section class="nb-section">
+          <button class="nb-secondary" type="button" data-action="export-diag">导出诊断日志</button>
+          <button class="nb-secondary" style="margin-top:10px" type="button" data-action="home">取消并返回首页</button>
+        </section>
       </main>
     </div>`;
   }
@@ -1026,7 +1037,17 @@ globalThis.lucide = {createIcons() {
     else if (state.screen === 'review') html = reviewTemplate();
     else if (state.screen === 'write') html = writeTemplate();
     else html = homeTemplate();
+    // 扫描进度、状态文案这类同页更新几秒就来一次；若每次都重放入场动画，
+    // 整页会不停淡入上移，看起来就是「跳一下」。
+    const visualKey = `${state.screen}|${state.modal || ''}`;
+    const screenChanged = visualKey !== lastVisualKey;
+    lastVisualKey = visualKey;
     screen.innerHTML = `<div class="nb-page-wrap">${html}${state.modal === 'wake' ? wakeModal() : state.modal === 'write-confirm' ? writeConfirmModal() : state.modal === 'write-gate' ? writeGateModal() : state.modal === 'dashboard-requirements' ? dashboardRequirementsModal() : state.modal === 'missing-vehicle' ? missingVehicleModal() : state.modal === 'license' ? licenseModal() : statusModal()}</div>`;
+    if (!screenChanged) {
+      // 同页更新：新节点上不要重放动画，让数值自己变就好
+      screen.querySelectorAll('.nb-page, .nb-content > *, .nb-info-row')
+            .forEach(function (el) { el.style.animation = 'none'; });
+    }
     startGateTimer();
     const modalVisibility = state.modal ? 'open' : 'closed';
     if (modalVisibility !== lastModalVisibility) {
