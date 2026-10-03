@@ -218,7 +218,9 @@ public final class BfgBleClient: NSObject {
     private var watchStart = DispatchTime.now()
     private var watchChangedAt: Double = -1
     private var watchLastValue = -1
-    private static let watchDuration: Double = 30
+    /// From policy, not a constant: expert mode watches longer, because a
+    /// vehicle nobody has validated is exactly where a forced revert shows up.
+    private var watchDuration: Double { WriteAccessPolicy.watchSeconds() }
     private static let watchInterval: Double = 0.5
     private let queue = DispatchQueue(label: "com.bfgtools.calibration.client")
 
@@ -1221,10 +1223,18 @@ public final class BfgBleClient: NSObject {
         case .writeDisVoltage:
             beginDisVoltageWrite()
         case .writeProfile:
-            guard decision.writeSupported else {
+            // A combination the author never validated is a statement about his
+            // test coverage, not about the vehicle in front of the rider. Expert
+            // mode proceeds — with every safety rail below still in force — and
+            // records in the log that it did so, so the export can never be read
+            // as a validated run.
+            guard decision.writeSupported || WriteAccessPolicy.allowsUnverifiedCombination() else {
                 fail("当前仪表与计量模块组合尚未通过写入验证；"
                     + "本次没有发送写入。请先导出诊断数据用于适配。")
                 return
+            }
+            if !decision.writeSupported {
+                log("EXPERT_UNVERIFIED 未验证组合放行：\(decision.reason)")
             }
             beginProfileWrite()
         default:
@@ -1357,9 +1367,9 @@ public final class BfgBleClient: NSObject {
         watchLastValue = -1
         state = .watchAfterWrite
         log(String(format: "WATCH_BEGIN 写入已确认；保持连接 %g 秒，每 %g 秒只读回读 0x00",
-                   Self.watchDuration, Self.watchInterval))
+                   watchDuration, Self.watchInterval))
         status(String(format: "写入已确认；正在观察 %g 秒，看车辆会不会改回去…",
-                      Self.watchDuration))
+                      watchDuration))
         scheduleWatchTick(after: Self.watchInterval)
     }
 
@@ -1372,7 +1382,7 @@ public final class BfgBleClient: NSObject {
 
     private func sendWatchRead() {
         guard !finished, state == .watchAfterWrite else { return }
-        if watchElapsed() >= Self.watchDuration {
+        if watchElapsed() >= watchDuration {
             endProfileWatch()
             return
         }
@@ -1401,10 +1411,10 @@ public final class BfgBleClient: NSObject {
         if watchChangedAt >= 0 {
             finish(String(format:
                 "写入 0x%02X 生效过，但在 T+%.2fs 被车辆改回（观察 %g 秒）。详见日志 WATCH 行。",
-                targetProfile, watchChangedAt, Self.watchDuration))
+                targetProfile, watchChangedAt, watchDuration))
         } else {
             finish(String(format: "写入 0x%02X 已确认并保持稳定 %g 秒。",
-                          targetProfile, Self.watchDuration))
+                          targetProfile, watchDuration))
         }
     }
 

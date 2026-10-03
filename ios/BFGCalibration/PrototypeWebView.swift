@@ -301,6 +301,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "confirm-offtable-write":
             confirmOffTableWrite()
 
+        case "expert-mode":
+            requestExpertModeToggle()
+
         case "restore-first":
             requestRestore(first: true)
 
@@ -565,12 +568,21 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
                 writeFailure("所选容量未适配，请重新选择电压和容量。")
                 return
             }
-            guard lastRead.writeSupported else {
+            // Same release as the BLE layer, stated here too so the rider gets a
+            // coherent answer instead of a client-level failure further down.
+            guard lastRead.writeSupported || WriteAccessPolicy.allowsUnverifiedCombination() else {
                 writeFailure("当前仪表与计量模块组合尚未通过写入验证；"
                     + "本次没有发送写入。请先导出诊断数据用于适配。")
                 return
             }
-            guard backupStore.firstBackup(serial: serial).valid else {
+            // Option B: a module that will not read back completely cannot be
+            // fully backed up — and those are exactly the vehicles that need the
+            // tool. Expert mode proceeds, but only because the pre-write snapshot
+            // and the rollback path below still have to succeed on their own, and
+            // because the rider is shown what could not be read before the frame
+            // goes out.
+            guard backupStore.firstBackup(serial: serial).valid
+                    || WriteAccessPolicy.allowsPartialBackup() else {
                 writeFailure("首次原参数备份尚未建立，本次没有发送写入指令。"
                     + "请先返回连接车辆读取一次，再回来写入。")
                 return
@@ -646,6 +658,49 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
 
     /// Re-runs the post-write verification against the previous write's target.
     /// Reads only — this never re-sends the write.
+    /// One switch for every limit that only says "nobody validated this".
+    ///
+    /// Confirmed with a native alert rather than a page modal: this releases
+    /// write policy, so the wording must be unmissable and the cancel path must
+    /// be the obvious default. Session-scoped — relaunching clears it, so the
+    /// next rider of this phone never inherits a released limit.
+    private func requestExpertModeToggle() {
+        let turningOn = !WriteAccessPolicy.expertMode
+        let alert = UIAlertController(
+            title: turningOn ? "开启专家模式" : "关闭专家模式",
+            message: turningOn
+                ? "将放开这些限制：\n"
+                    + "· N 开头与 3U 开头等未验证序列号\n"
+                    + "· 未通过通信验证的仪表与计量组合\n"
+                    + "· 不在内置表内的容量\n\n"
+                    + "不会放开的：写前整片快照、快照落盘校验、"
+                    + "单字节写（模块 0x10 地址 0x00）、写后回读与全量比对、两条恢复路径。\n\n"
+                    + "仪表盘写入存在已知损坏案例，可能损坏计量模块、导致车辆无法启动；"
+                    + "备份不保证一定可以恢复。请自行承担风险。"
+                : "关闭后，未验证车型将恢复为仅可读取。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            self.pushState()
+        })
+        alert.addAction(UIAlertAction(title: turningOn ? "我已知晓，开启" : "确认关闭",
+                                      style: .destructive) { _ in
+            WriteAccessPolicy.expertMode = turningOn
+            self.state["expertMode"] = turningOn
+            // The remaining gate this session: every write still has to pass
+            // the snapshot and read-back rails, which are untouched.
+            self.pushState()
+        })
+        // This type is a coordinator, not a view controller, so the alert has to
+        // be handed to whatever is actually on screen — same route share() uses.
+        guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first,
+              var presenter = (scene.windows.first(where: { $0.isKeyWindow })
+                                ?? scene.windows.first)?.rootViewController
+        else { return }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        presenter.present(alert, animated: true)
+    }
+
     private func requestPostWriteReread() {
         guard let target = lastPostWriteTarget else {
             refreshRead()
@@ -921,11 +976,14 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
             }
         }
 
+        // From policy, not a constant: expert mode waits longer so that a
+        // mis-tap stays reversible for long enough to notice it.
         let seconds: Int
         if pending.isDashboard {
-            seconds = pending.stage == 0 ? TimedRiskGate.dashboardSeconds : 0
+            seconds = pending.stage == 0
+                ? WriteAccessPolicy.riskGateSeconds(isDashboard: true) : 0
         } else {
-            seconds = TimedRiskGate.meterSeconds
+            seconds = WriteAccessPolicy.riskGateSeconds(isDashboard: false)
         }
 
         gateNonce += 1
@@ -1554,7 +1612,7 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
                                                    meter: result.meterFirmware))
                 : (result.profileRaw >= 0
                     && result.displayBeforeCapacity > 0
-                    && result.writeSupported)
+                    && (result.writeSupported || WriteAccessPolicy.allowsUnverifiedCombination()))
             guard backupReady else {
                 writeFailure("写入前未能完整读取并保存原参数，本次没有发送写入指令。"
                     + "请保持车辆开机后重试。")
