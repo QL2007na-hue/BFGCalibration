@@ -304,6 +304,12 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "expert-mode":
             requestExpertModeToggle()
 
+        case "sweep-enable":
+            requestSweepEnable()
+
+        case "sweep-values":
+            requestSweepRun()
+
         case "probe-enable":
             requestProbeEnable()
 
@@ -717,6 +723,65 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     }
 
     // MARK: - Rated-capacity register (0x0E)
+
+    // MARK: - Capacity sweep
+
+    /// The fifth switch. This is the only mode where the tool writes a value it
+    /// did not read — so it is gated more tightly than the other four, and the
+    /// run reverts every candidate before touching the next one.
+    private func requestSweepEnable() {
+        let turningOn = !WriteAccessPolicy.allowsCapacitySweep
+        let onText = "将允许工具按固件表里的容量值逐个试探，从小到大，并逐个写回原值。\n\n"
+            + "这是唯一一种工具会写入「它没读到的值」的模式：试探期间 0x0E 会短暂变成候选值，"
+            + "然后立刻恢复。每一步都先读基准、再写试探值、再回读判定、再写回原值、再回读确认。\n\n"
+            + "任何一步恢复不成功，试探会立即中止而不是继续往前走。\n\n"
+            + "能得到的结论：这个模块接受的容量上界在哪。如果连 36000 都拒绝，"
+            + "说明模块有一个硬上限，靠改寄存器校到 50Ah 不可能。\n\n"
+            + "本开关仅本次运行有效，不被其他四个开关连带开启。"
+        let offText = "关闭后，试探按钮会被拒绝。已保存的备份不受影响。"
+        let alert = UIAlertController(
+            title: turningOn ? "开启容量值试探" : "关闭容量值试探",
+            message: turningOn ? onText : offText,
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: turningOn ? "我已知晓，开启" : "确认关闭",
+                                      style: .destructive) { [weak self] _ in
+            WriteAccessPolicy.allowsCapacitySweep = turningOn
+            self?.state["sweepEnabled"] = turningOn
+            self?.pushState()
+        })
+        presentAlert(alert)
+    }
+
+    private func requestSweepRun() {
+        guard WriteAccessPolicy.allowsCapacitySweep else {
+            state["errorMessage"] = "容量值试探未开启，请先在设置页开启。"
+            state["modal"] = "operation-failed"
+            pushState()
+            return
+        }
+        let current = backupStore.prewriteRatedCapacity(serial: serial) > 0
+            ? backupStore.prewriteRatedCapacity(serial: serial)
+            : backupStore.ratedCapacityBackup(serial: serial)
+        let known = current > 0 ? "\(current) mAh" : "未知（会在试探开始时读取）"
+        let onText = "工具会读取 0x0E 当前值作为基准，然后按固件表里的容量从小到大逐个试探："
+            + "写入候选值 → 回读判定 → 立刻写回基准 → 回读确认，再试下一个。\n\n"
+            + "基准：" + known + "\n\n"
+            + "试探结束后 0x0E 会回到基准值。如果某一步无法恢复，试探会立即中止并告诉你。\n\n"
+            + "日志里会出现 SWEEP_ 开头的行，记录每个候选值被接受还是拒绝。"
+        let alert = UIAlertController(
+            title: "容量值试探",
+            message: onText,
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: "开始试探", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            self.goTo("write-progress")
+            self.startClient(record: self.placeholderRecord(serial: self.serial),
+                             operation: .sweepCapacityValues)
+        })
+        presentAlert(alert)
+    }
 
     // MARK: - Register-write probe
 
@@ -2029,7 +2094,7 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
             state["screen"] = "pair-ready"
             state["modal"] = "operation-failed"
         case .readOnly, .compareRead, .discoverVehicles, .writeProfile, .writeDisVoltage,
-             .writeCapacity, .probeRegisterWrites:
+             .writeCapacity, .probeRegisterWrites, .sweepCapacityValues:
             state["screen"] = "home"
             state["modal"] = "operation-failed"
         }

@@ -692,9 +692,12 @@ globalThis.lucide = {createIcons() {
           <div class="nb-section-head"><h3 class="nb-section-title">额定容量寄存器 0x0E</h3></div>
           <p class="nb-label">计量模块算电量用的额定容量就存在这里。实测发现：只写档位（0x00）会在约 6.5 秒后被车辆改回，因为它与这里的值不自洽——所以要让改动站住，得连这个寄存器一起写。</p>
           <p class="nb-label">写入前会先读原值做备份，读不到就一个字节都不发；写后保持连接观察 90 秒，并在日志里记录 0x0E / 0x0F / 档位三个寄存器的变化。</p>
-          <p class="nb-label">实车测得 <b>0x0E 不接受写入</b>：帧格式正确、车却完全沉默。所以下面提供「探测」——把每个容量候选寄存器各写一次它自己的当前值，只问它们接不接受写，车辆参数不变。</p>
+          <p class="nb-label"><b>实车结论已更新</b>：0x0E <b>可以写</b>——写回它自己的当前值会立刻收到 ACK；但写 55000 会被完全忽略。所以它不是只读，而是有一个「接受范围」。下面两个工具分别回答「哪些寄存器能写」和「容量能写到多大」。</p>
           <div class="nb-label" style="margin-top:12px">已备份的 0x0E 原值</div>
           <div class="nb-value">${state.ratedCapacityBackup ? esc(state.ratedCapacityBackup) : '未建立'}</div>
+          <button class="nb-secondary" style="margin-top:12px" type="button" data-action="sweep-enable">${state.sweepEnabled ? '关闭容量值试探' : '开启容量值试探'}</button>
+          <button class="nb-secondary" style="margin-top:10px" type="button" data-action="sweep-values">容量值试探（找出接受上界）</button>
+          ${state.sweepEnabled ? `<div class="nb-alert warning" style="margin-top:12px">${icon('triangle-alert')}<span>试探已开启：会逐个写入固件表里的容量值并立刻写回原值；任何一步恢复失败会立即中止。</span></div>` : ''}
           <button class="nb-secondary" style="margin-top:12px" type="button" data-action="probe-enable">${state.probeEnabled ? '关闭寄存器写入探测' : '开启寄存器写入探测'}</button>
           <button class="nb-secondary" style="margin-top:10px" type="button" data-action="probe-registers">探测容量候选寄存器</button>
           ${state.probeEnabled ? `<div class="nb-alert warning" style="margin-top:12px">${icon('triangle-alert')}<span>探测已开启：会向白名单里的寄存器各写一次它自己的当前值，车辆参数不变。</span></div>` : ''}

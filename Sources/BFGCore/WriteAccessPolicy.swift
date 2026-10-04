@@ -86,6 +86,25 @@ public enum WriteAccessPolicy {
         allowsCapacityWrite && CapacityCompatibilityResolver.isPlausible(milliAh)
     }
 
+    // MARK: - Capacity sweep
+
+    /// The fifth switch. Walking a range of values is a bigger commitment than
+    /// asking once: every candidate is written and then reverted, so this is the
+    /// only mode where the tool deliberately puts the register through a change
+    /// it did not read there.
+    ///
+    /// Not implied by any of the other four.
+    public static var allowsCapacitySweep = false
+
+    /// Values a sweep may try, ascending, starting at the vehicle's own value.
+    ///
+    /// Drawn only from the firmware table so each candidate is a configuration
+    /// the vehicle already knows. Ascending so the sweep walks away from the
+    /// current value in steps rather than jumping to the far end and back.
+    public static func sweepCandidates(from current: Int) -> [Int] {
+        BfgProfileCatalog.tabulatedCapacities.filter { $0 >= current }
+    }
+
     // MARK: - Register-write probe (the narrowest release)
 
     /// The only registers a probe run may attempt to write.

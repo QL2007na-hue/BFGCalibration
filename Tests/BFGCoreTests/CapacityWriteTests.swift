@@ -171,4 +171,65 @@ final class CapacityWriteTests: XCTestCase {
         XCTAssertEqual(NinebotFrame.writeBfgWord(register: 0x0F, value: 26000),
                        [0x5A, 0xA5, 0x02, 0x3E, 0x10, 0x02, 0x0F, 0x90, 0x65])
     }
+
+    // MARK: - Capacity sweep
+
+    /// A sweep must start at the vehicle own value: the first candidate is the
+    /// baseline itself, so a run that is interrupted before any real change has
+    /// still written nothing the vehicle did not already hold.
+    func testSweepStartsAtTheVehicleValue() {
+        let c = WriteAccessPolicy.sweepCandidates(from: 26000)
+        XCTAssertEqual(c.first, 26000)
+        XCTAssertTrue(c.allSatisfy { $0 >= 26000 })
+        XCTAssertEqual(c, c.sorted(), "candidates must ascend")
+    }
+
+    /// Only firmware-table values. A refusal then means "this module does not
+    /// accept this known configuration" rather than "it disliked a number".
+    func testSweepUsesOnlyTabulatedCapacities() {
+        let table = Set(BfgProfileCatalog.tabulatedCapacities)
+        for current in [0, 10500, 26000, 45000, 55000, 99999] {
+            for v in WriteAccessPolicy.sweepCandidates(from: current) {
+                XCTAssertTrue(table.contains(v), "candidate \(v) is not in the table")
+            }
+        }
+    }
+
+    func testTabulatedCapacitiesAreSortedAndUnique() {
+        let t = BfgProfileCatalog.tabulatedCapacities
+        XCTAssertEqual(t, t.sorted())
+        XCTAssertEqual(t.count, Set(t).count)
+        XCTAssertTrue(t.contains(26000))
+        XCTAssertTrue(t.contains(55000))
+        XCTAssertTrue(t.contains(10500))
+    }
+
+    func testSweepCandidatesAreEmptyAboveTheLargestTabulatedValue() {
+        XCTAssertTrue(WriteAccessPolicy.sweepCandidates(from: 55001).isEmpty)
+        XCTAssertEqual(WriteAccessPolicy.sweepCandidates(from: 55000), [55000])
+    }
+
+    /// The fifth switch is independent of the other four.
+    func testSweepIsOffByDefaultAndIndependent() {
+        XCTAssertFalse(WriteAccessPolicy.allowsCapacitySweep)
+        WriteAccessPolicy.expertMode = true
+        XCTAssertFalse(WriteAccessPolicy.allowsCapacitySweep)
+        WriteAccessPolicy.allowsCapacityWrite = true
+        XCTAssertFalse(WriteAccessPolicy.allowsCapacitySweep)
+        WriteAccessPolicy.allowsRegisterProbe = true
+        XCTAssertFalse(WriteAccessPolicy.allowsCapacitySweep)
+    }
+
+    /// A sweep writes values it did not read, so its frame builder must still be
+    /// the allowlist-gated one — a sweep is not a licence to write elsewhere.
+    func testSweepFramesStayOnTheCapacityRegister() {
+        for v in WriteAccessPolicy.sweepCandidates(from: 26000) {
+            let f = NinebotFrame.writeBfgWord(register: NinebotFrame.capacityWriteIndex, value: v)
+            XCTAssertNotNil(f)
+            XCTAssertEqual(f?[6], 0x0E)
+            XCTAssertEqual(f?.count, 9)
+        }
+        XCTAssertNil(NinebotFrame.writeBfgWord(register: 0x00, value: 26000),
+                     "the sweep path must not be able to reach the profile byte")
+    }
 }

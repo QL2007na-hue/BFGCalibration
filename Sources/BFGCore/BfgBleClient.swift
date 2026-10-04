@@ -39,6 +39,14 @@ public final class BfgBleClient: NSObject {
         /// register accepts a write" from "this register is read-only", which is
         /// the question 0x0E answered with silence.
         case probeRegisterWrites
+        /// Walks the firmware table's capacities upward from the vehicle's own
+        /// value, asking which ones this module will accept.
+        ///
+        /// The only mode where the tool deliberately writes a value it did not
+        /// read: every candidate is written and then immediately reverted, and the
+        /// revert is verified before the next candidate starts. If a revert cannot
+        /// be confirmed the run stops rather than continuing to drift.
+        case sweepCapacityValues
     }
 
     public protocol Listener: AnyObject {
@@ -108,6 +116,11 @@ public final class BfgBleClient: NSObject {
         /// Which capacity candidates accepted a probe write, and which stayed
         /// silent. The second list is the more useful one: it says the capacity
         /// route needs a different mechanism, not a different value.
+        /// Which firmware-table capacities the module accepted, and which it
+        /// refused. Together they bound the range this module will honour, which
+        /// is the question the probe left open.
+        public var sweepAccepted: [Int] = []
+        public var sweepRefused: [Int] = []
         public var probeWritable: [Int] = []
         public var probeReadOnly: [Int] = []
         public var capacityRatedBefore = -1
@@ -170,6 +183,7 @@ public final class BfgBleClient: NSObject {
         case watchAfterWrite
         case waitCapacityPreRead, waitCapacityWriteAck, waitAfterCapacityWrite, watchCapacity
         case probePreRead, probeWrite, probeVerify
+        case sweepPreRead, sweepTryWrite, sweepVerify, sweepRestore, sweepRestoreVerify
         case done
     }
 
@@ -298,6 +312,25 @@ public final class BfgBleClient: NSObject {
     private var probeAckSeen = false
     private var probeWritable: [Int] = []
     private var probeReadOnly: [Int] = []
+
+    // MARK: - Capacity sweep
+    //
+    // The probe answered the binary question — 0x0E accepts writes — and left the
+    // real one open: it accepted 26000 and refused 55000, so the module has a
+    // range, not a lock. This walks that range using values the firmware table
+    // already names, smallest first, so the boundary is found in steps.
+    //
+    // Every candidate is reverted before the next one is attempted, and the
+    // revert is read back. sweepOriginal is captured once and never rewritten:
+    // if any step cannot restore it, the run stops with the register wherever it
+    // is rather than walking further away from where it started.
+    private var sweepCandidates: [Int] = []
+    private var sweepCursor = 0
+    private var sweepOriginal = -1
+    private var sweepValue = -1
+    private var sweepAckSeen = false
+    private var sweepAccepted: [Int] = []
+    private var sweepRefused: [Int] = []
 
     private func capacityWatchElapsed() -> Double {
         Double(DispatchTime.now().uptimeNanoseconds &- capacityWatchStart.uptimeNanoseconds)
@@ -522,6 +555,32 @@ public final class BfgBleClient: NSObject {
                 afterDisConfigRead()
             }
 
+        case .sweepPreRead:
+            // Without a baseline there is nothing to revert to, so this one stops
+            // before any write rather than carrying on.
+            fail("试探前无法读取 0x0E 原值；本次没有发送任何写入指令。")
+
+        case .sweepTryWrite:
+            // Silent is a result here too: fall through to the read-back, which
+            // decides by the register rather than by the ACK.
+            log(String(format: "SWEEP_ACK v=%d 无（车沉默）", sweepValue))
+            readBackSweepValue()
+
+        case .sweepVerify:
+            // Still has to be reverted: an unreadable value is not a reason to
+            // leave the register holding a candidate.
+            log(String(format: "SWEEP_RESULT v=%d 回读无回复 → 拒绝", sweepValue))
+            sweepRefused.append(sweepValue)
+            restoreSweepValue()
+
+        case .sweepRestore:
+            fail(String(format: "恢复写入无回复；0x0E 可能仍停留在 %d，请重新连接核对后再试。",
+                        sweepValue))
+
+        case .sweepRestoreVerify:
+            fail(String(format: "恢复后无法回读确认；0x0E 状态未知（原值 %d，最后一次写入 %d）。"
+                        + "请重新连接并核对。", sweepOriginal, sweepValue))
+
         case .probePreRead:
             log(String(format: "PROBE_RESULT 0x%02X 预读无回复，跳过", probeRegister))
             advanceProbe()
@@ -646,7 +705,8 @@ public final class BfgBleClient: NSObject {
                  .waitWriteAck, .waitAfterProfile, .waitAfterCapacity,
                  .watchAfterWrite,
                  .waitCapacityPreRead, .waitCapacityWriteAck, .waitAfterCapacityWrite, .watchCapacity,
-                 .probePreRead, .probeWrite, .probeVerify:
+                 .probePreRead, .probeWrite, .probeVerify,
+                 .sweepPreRead, .sweepTryWrite, .sweepVerify, .sweepRestore, .sweepRestoreVerify:
                 try handleSessionReply(encrypted)
             default:
                 break
@@ -971,6 +1031,58 @@ public final class BfgBleClient: NSObject {
             result.resolvedAfterCapacityRaw = result.afterCapacityRaw
             clearTimeout()
             beginProfileWatch()
+
+        case .sweepPreRead:
+            let sweepIdx = try requireReadAck(plain, src: 0x10, len: 9)
+            guard sweepIdx == NinebotFrame.capacityWriteIndex, plain.count >= 9 else { return }
+            clearTimeout()
+            let sweepNow = NinebotFrame.readLe16(plain, offset: 7)
+            if sweepOriginal < 0 {
+                // Captured once, never rewritten: every candidate is reverted to
+                // this exact value, so it has to be the vehicle's own.
+                sweepOriginal = sweepNow
+                sweepCandidates = WriteAccessPolicy.sweepCandidates(from: sweepNow)
+                result.capacityRatedBefore = sweepNow
+                let list = sweepCandidates.map(String.init).joined(separator: " ")
+                log("SWEEP_BEGIN 原值=\(sweepNow)，候选 \(sweepCandidates.count) 个（均来自固件表）：\(list)")
+                if sweepCandidates.isEmpty {
+                    fail("固件表里没有不低于当前值 \(sweepNow) 的候选容量；本次没有发送任何写入指令。")
+                    return
+                }
+            } else if sweepNow != sweepOriginal {
+                log(String(format: "SWEEP_ABORT 0x0E 已被改动：期望 %d 实际 %d",
+                           sweepOriginal, sweepNow))
+                fail(String(format: "0x0E 在试探过程中被改动（期望 %d，实际 %d）；"
+                            + "为免继续偏离，试探已中止。请重新连接核对。",
+                            sweepOriginal, sweepNow))
+                return
+            }
+            advanceSweep()
+
+        case .sweepTryWrite:
+            guard NinebotFrame.isFrame(plain, src: 0x10, dst: 0x3E, cmd: 0x05) else { return }
+            sweepAckSeen = true
+            log(String(format: "SWEEP_ACK v=%d %@", sweepValue, Hex.encode(plain)))
+            clearTimeout()
+            readBackSweepValue()
+
+        case .sweepVerify:
+            let sweepAfterIdx = try requireReadAck(plain, src: 0x10, len: 9)
+            guard sweepAfterIdx == NinebotFrame.capacityWriteIndex, plain.count >= 9 else { return }
+            clearTimeout()
+            concludeSweepValue(NinebotFrame.readLe16(plain, offset: 7))
+
+        case .sweepRestore:
+            guard NinebotFrame.isFrame(plain, src: 0x10, dst: 0x3E, cmd: 0x05) else { return }
+            log(String(format: "SWEEP_RESTORE_ACK %@", Hex.encode(plain)))
+            clearTimeout()
+            verifySweepRestore()
+
+        case .sweepRestoreVerify:
+            let sweepRestoreIdx = try requireReadAck(plain, src: 0x10, len: 9)
+            guard sweepRestoreIdx == NinebotFrame.capacityWriteIndex, plain.count >= 9 else { return }
+            clearTimeout()
+            concludeSweepRestore(NinebotFrame.readLe16(plain, offset: 7))
 
         case .probePreRead:
             let probePre = try requireReadAck(plain, src: 0x10, len: 9)
@@ -1413,6 +1525,13 @@ public final class BfgBleClient: NSObject {
         switch operation {
         case .writeDisVoltage:
             beginDisVoltageWrite()
+        case .sweepCapacityValues:
+            guard WriteAccessPolicy.allowsCapacitySweep else {
+                fail("容量值试探未开启；本次没有发送任何写入指令。")
+                return
+            }
+            beginSweepRun()
+
         case .probeRegisterWrites:
             guard WriteAccessPolicy.allowsRegisterProbe else {
                 fail("寄存器写入探测未开启；本次没有发送任何写入指令。")
@@ -1834,6 +1953,116 @@ public final class BfgBleClient: NSObject {
                 + "容量这条路需要另一条写入路径，详见 PROBE_ 日志。")
         } else {
             finish("探测完成：可写 \(w)；只读 \(r.isEmpty ? "无" : r)。详见 PROBE_ 日志。")
+        }
+    }
+
+    // MARK: - Capacity sweep implementation
+
+    private func beginSweepRun() {
+        // Candidates are derived after the first read, because the list starts at
+        // the vehicle's own value. A placeholder keeps the API honest: nothing is
+        // written until sweepOriginal is known.
+        sweepCandidates = []
+        sweepCursor = 0
+        sweepOriginal = -1
+        sweepAccepted = []
+        sweepRefused = []
+        state = .sweepPreRead
+        status("容量值试探：先读取当前值作为基准…")
+        send(NinebotFrame.readBfgWord(register: NinebotFrame.capacityWriteIndex))
+        timeout(.sweepPreRead, 4.5, "试探前读取 0x0E 无回复")
+    }
+
+    private func advanceSweep() {
+        guard sweepCursor < sweepCandidates.count else {
+            endSweepRun()
+            return
+        }
+        sweepValue = sweepCandidates[sweepCursor]
+        sweepCursor += 1
+        sweepAckSeen = false
+        guard let frame = NinebotFrame.writeBfgWord(register: NinebotFrame.capacityWriteIndex,
+                                                    value: sweepValue) else {
+            log(String(format: "SWEEP_RESULT v=%d 帧构造被拒，跳过", sweepValue))
+            advanceSweep()
+            return
+        }
+        log(String(format: "SWEEP_TRY v=%d（%d/%d）frame=%@",
+                   sweepValue, sweepCursor, sweepCandidates.count, Hex.encode(frame)))
+        status(String(format: "试探 %d mAh（%d/%d）…",
+                      sweepValue, sweepCursor, sweepCandidates.count))
+        state = .sweepTryWrite
+        send(frame)
+        result.writeCommandSent = true
+        scheduleVerify(after: 2.0) { [weak self] in self?.readBackSweepValue() }
+    }
+
+    private func readBackSweepValue() {
+        guard !finished, state == .sweepTryWrite || state == .sweepVerify else { return }
+        state = .sweepVerify
+        send(NinebotFrame.readBfgWord(register: NinebotFrame.capacityWriteIndex))
+        timeout(.sweepVerify, 3.0, String(format: "试探 %d 回读无回复", sweepValue))
+    }
+
+    /// Settles the candidate, then puts the original value back.
+    private func concludeSweepValue(_ after: Int) {
+        // A value that reads back is accepted even if the ACK was lost; a value
+        // that does not is refused even if an ACK arrived. The register is the
+        // evidence, the ACK only the first hint.
+        let accepted = after == sweepValue
+        if accepted { sweepAccepted.append(sweepValue) } else { sweepRefused.append(sweepValue) }
+        log(String(format: "SWEEP_RESULT v=%d ack=%@ after=%d → %@",
+                   sweepValue, sweepAckSeen ? "有" : "无", after,
+                   accepted ? "接受" : "拒绝"))
+        restoreSweepValue()
+    }
+
+    /// The revert. Everything above is allowed to be inconclusive; this is not.
+    private func restoreSweepValue() {
+        guard let frame = NinebotFrame.writeBfgWord(register: NinebotFrame.capacityWriteIndex,
+                                                    value: sweepOriginal) else {
+            fail("无法构造恢复帧；试探中止，0x0E 可能不是原值。")
+            return
+        }
+        log(String(format: "SWEEP_RESTORE %d → %d frame=%@",
+                   sweepValue, sweepOriginal, Hex.encode(frame)))
+        state = .sweepRestore
+        send(frame)
+        scheduleVerify(after: 2.0) { [weak self] in self?.verifySweepRestore() }
+    }
+
+    private func verifySweepRestore() {
+        guard !finished, state == .sweepRestore || state == .sweepRestoreVerify else { return }
+        state = .sweepRestoreVerify
+        send(NinebotFrame.readBfgWord(register: NinebotFrame.capacityWriteIndex))
+        timeout(.sweepRestoreVerify, 3.0, "恢复回读无回复")
+    }
+
+    private func concludeSweepRestore(_ restored: Int) {
+        guard restored == sweepOriginal else {
+            // Stop here. Continuing would walk the register further from where it
+            // started, which is the one outcome this mode must never produce.
+            log(String(format: "SWEEP_RESTORE_FAILED 期望 %d 实际 %d；中止试探",
+                       sweepOriginal, restored))
+            fail(String(format: "0x0E 未能恢复到原值 %d（当前 %d）。试探已中止，"
+                        + "请用「恢复 0x0E 到备份值」或重新连接核对。",
+                        sweepOriginal, restored))
+            return
+        }
+        log(String(format: "SWEEP_RESTORE_OK 0x0E=%d", restored))
+        advanceSweep()
+    }
+
+    private func endSweepRun() {
+        let ok = sweepAccepted.map(String.init).joined(separator: " ")
+        let no = sweepRefused.map(String.init).joined(separator: " ")
+        log("SWEEP_END 原值=\(sweepOriginal) 接受: \(ok.isEmpty ? "无" : ok) | 拒绝: \(no.isEmpty ? "无" : no)")
+        result.sweepAccepted = sweepAccepted
+        result.sweepRefused = sweepRefused
+        if sweepAccepted.isEmpty {
+            finish("试探完成：固件表内的候选值全部被拒绝。详见 SWEEP_ 日志。")
+        } else {
+            finish("试探完成：接受 \(ok)；拒绝 \(no.isEmpty ? "无" : no)。0x0E 已恢复为 \(sweepOriginal)。")
         }
     }
 

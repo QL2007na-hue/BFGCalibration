@@ -8,6 +8,16 @@ public enum BfgProfileCatalog {
         46000, 55000, 52000, 18000
     ]
 
+    /// Every capacity the firmware table names, ascending and deduplicated.
+    ///
+    /// Used by the capacity sweep, which only ever tries values the firmware
+    /// already ships with. That matters: a refusal then means "this module does
+    /// not accept this known configuration", not "it disliked an arbitrary
+    /// number", and the answer stays comparable across vehicles.
+    public static var tabulatedCapacities: [Int] {
+        Array(Set(coreByIndex)).sorted()
+    }
+
     public static func expectedCore(_ profile: Int) -> Int {
         let value = profile & 0xFF
         let voltageCode = value & 0x0F
