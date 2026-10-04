@@ -61,6 +61,33 @@ public enum NinebotFrame {
         [0x5A, 0xA5, 0x01, 0x3E, 0x10, 0x02, 0x00, UInt8(profile & 0xFF)]
     }
 
+    /// Writes the rated-capacity word at `0x0E`.
+    ///
+    /// This is the second — and only other — write site in the whole app.
+    ///
+    /// It exists because the vehicle itself forces it. The profile byte declares
+    /// a capacity, the capacity registers hold one, and a vehicle that finds the
+    /// two disagreeing silently restores the declaration a few seconds later.
+    /// Measured on the real M85C: profile 0xD0 was accepted (WRITE_ACK), applied
+    /// after 2.16 s, held for 6.57 s, then reverted to 0x50 — which is exactly
+    /// the byte that agrees with the 26000 mAh still sitting in 0x0E. Writing
+    /// only the declaration can therefore never survive.
+    ///
+    /// Two properties keep this narrow:
+    ///   - the address is a literal here, never a parameter, so no caller can
+    ///     aim this builder at another register;
+    ///   - the value is a 16-bit little-endian word, matching `readLe16` and the
+    ///     `readCapacity` frame the tool already trusts.
+    public static func writeCapacityRated(_ milliAh: Int) -> [UInt8] {
+        let clamped = max(0, min(0xFFFF, milliAh))
+        return [0x5A, 0xA5, 0x02, 0x3E, 0x10, 0x02, 0x0E,
+                UInt8(clamped & 0xFF), UInt8((clamped >> 8) & 0xFF)]
+    }
+
+    /// The register `writeCapacityRated` targets. Exposed so callers can log and
+    /// verify against the same constant instead of repeating the literal.
+    public static let capacityWriteIndex = 0x0E
+
     public static func readBfgWord(register: Int) -> [UInt8] {
         [0x5A, 0xA5, 0x01, 0x3E, 0x10, 0x01, UInt8(register & 0xFF), 0x02]
     }

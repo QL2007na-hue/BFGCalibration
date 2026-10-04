@@ -47,6 +47,8 @@ public final class BackupStore {
         static let dis92Original = "dis92_original"
         static let lastConfirmedProfile = "last_confirmed_profile"
         static let lastConfirmedTime = "last_confirmed_time"
+        static let ratedCapacity = "rated_capacity"
+        static let prewriteRatedCapacity = "prewrite_rated_capacity"
     }
 
     private let defaults: UserDefaults
@@ -100,6 +102,38 @@ public final class BackupStore {
 
     public func disConfigBackup(serial: String) -> Int {
         intValue(serial, Suffix.dis92Original)
+    }
+
+    // MARK: - Rated capacity register (0x0E)
+
+    /// The capacity word as it stood before any write by this tool.
+    ///
+    /// Kept separately from the profile/capacity pair above because it is a
+    /// different physical register with its own rollback requirement: restoring
+    /// the profile does not restore 0x0E, and leaving the two disagreeing is
+    /// exactly the state the vehicle corrects on its own.
+    public func ratedCapacityBackup(serial: String) -> Int {
+        intValue(serial, Suffix.ratedCapacity)
+    }
+
+    public func saveRatedCapacityBackupIfAbsent(serial: String, raw: Int) {
+        guard raw > 0 else { return }
+        guard !flag(serial, Suffix.ratedCapacity),
+              let key = key(serial, Suffix.ratedCapacity) else { return }
+        defaults.set(raw, forKey: key)
+    }
+
+    /// Replaced on every capacity write, so a rollback targets the value that was
+    /// actually there immediately before the last one.
+    public func prewriteRatedCapacity(serial: String) -> Int {
+        intValue(serial, Suffix.prewriteRatedCapacity)
+    }
+
+    @discardableResult
+    public func savePrewriteRatedCapacity(serial: String, raw: Int) -> Bool {
+        guard raw > 0, let key = key(serial, Suffix.prewriteRatedCapacity) else { return false }
+        defaults.set(raw, forKey: key)
+        return true
     }
 
     // MARK: - Pre-write snapshot (replaced on every write)

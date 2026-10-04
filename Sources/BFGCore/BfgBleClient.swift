@@ -28,6 +28,10 @@ public final class BfgBleClient: NSObject {
         /// Sweeps a module's whole register space twice, so a write can be
         /// measured against what the vehicle held beforehand.
         case dumpRegisters
+        /// Writes the rated-capacity word at 0x0E — the second and only other
+        /// write site. Separate from `.writeProfile` on purpose: it carries its
+        /// own policy flag, its own rollback slot and its own watch window.
+        case writeCapacity
     }
 
     public protocol Listener: AnyObject {
@@ -91,6 +95,11 @@ public final class BfgBleClient: NSObject {
         public var resolvedBeforeSoc = -1
         public var resolvedBeforeCapacityRaw = -1
         public var resolvedAfterCapacityRaw = -1
+        /// The rated-capacity register (0x0E) as it stood before and after a
+        /// capacity write. Exposed so the coordinator can persist both: the
+        /// before value is the rollback target, the after value is the evidence.
+        public var capacityRatedBefore = -1
+        public var capacityRatedAfter = -1
 
         /// Android substitutes the scanned capacity for the raw 0x1C reading when
         /// the vehicle only resolved in compatibility mode. An unsupported
@@ -147,12 +156,15 @@ public final class BfgBleClient: NSObject {
         case waitCapacityCompatScan, waitRegisterScan, waitDumpScan
         case waitWriteAck, waitAfterProfile, waitAfterCapacity
         case watchAfterWrite
+        case waitCapacityPreRead, waitCapacityWriteAck, waitAfterCapacityWrite, watchCapacity
         case done
     }
 
     private weak var listener: Listener?
     private let operation: Operation
     private let targetProfile: Int
+    /// Target for `.writeCapacity`. Zero means "not a capacity write".
+    private let targetCapacity: Int
     private let record: DeviceRecord
     private let result = Result()
 
@@ -218,6 +230,39 @@ public final class BfgBleClient: NSObject {
     private var watchStart = DispatchTime.now()
     private var watchChangedAt: Double = -1
     private var watchLastValue = -1
+
+    // MARK: - Capacity-register write (0x0E) and its watch
+    //
+    // Why this exists: the profile byte declares a capacity that 0x0E also
+    // holds, and a vehicle that finds the two disagreeing restores the
+    // declaration about 6.5 s later — measured, not guessed (write 0xD0 at
+    // T+164.41, applied T+166.57, held until T+173.14, reverted to the byte
+    // that agrees with the 26000 still in 0x0E). A tool that can only write
+    // the declaration can therefore never make a change survive.
+    //
+    // The watch samples THREE registers in rotation rather than one. The
+    // question is not only "did 0x0E stick" but "did the profile follow it, and
+    // did the mirror at 0x0F agree" — that triple is what distinguishes a
+    // self-consistent vehicle from one whose registers have drifted apart.
+    private var capacityVerifyAttempts = 0
+    private var capacityWatchTick = 0
+    private var capacityWatchStart = DispatchTime.now()
+    private var capacityWatchTimer: DispatchWorkItem?
+    private var capacityBefore = -1
+    private var capacityAfter = -1
+    private var capacityMirror = -1
+    private var capacityProfileSeen = -1
+    private var capacityChangedAt: Double = -1
+    private var capacityReverted = false
+
+    /// Probed in strict rotation so a three-register round still samples the
+    /// primary register often enough to timestamp a revert to within ~1.5 s.
+    private static let capacityProbeRotation = [0x0E, 0x0F, 0x00]
+
+    private func capacityWatchElapsed() -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- capacityWatchStart.uptimeNanoseconds)
+            / 1_000_000_000
+    }
     /// From policy, not a constant: expert mode watches longer, because a
     /// vehicle nobody has validated is exactly where a forced revert shows up.
     private var watchDuration: Double { WriteAccessPolicy.watchSeconds() }
@@ -247,6 +292,7 @@ public final class BfgBleClient: NSObject {
     private var awaitingCentralState = false
 
     public init(record: DeviceRecord, operation: Operation, targetProfile: Int = -1,
+             targetCapacity: Int = 0,
          expectedDisConfigRaw: Int = -1, allowUnverifiedDis: Bool = false,
          dumpModules: [Int] = [],
          transport: BleTransport, credentialStore: CredentialStore,
@@ -254,6 +300,7 @@ public final class BfgBleClient: NSObject {
         self.record = record
         self.operation = operation
         self.targetProfile = targetProfile
+        self.targetCapacity = targetCapacity
         self.expectedDisConfigRaw = expectedDisConfigRaw
         self.allowUnverifiedDis = allowUnverifiedDis
         self.dumpModules = dumpModules
@@ -435,6 +482,25 @@ public final class BfgBleClient: NSObject {
                 afterDisConfigRead()
             }
 
+        case .waitCapacityPreRead:
+            // No pre-read, no backup, no write. This is the one timeout in the
+            // capacity path that must terminate rather than retry into a write.
+            fail("写入前未能读到 0x0E 原值，没有可回滚的备份；本次没有发送写入指令。")
+
+        case .waitAfterCapacityWrite:
+            if capacityVerifyAttempts < NinebotFrame.maxCapacityVerifyAttempts {
+                result.verificationRetried = true
+                requestCapacityWriteVerify()
+            } else {
+                fail("容量写入指令已发送，但多次回读无回复；请重新连接读取当前配置。")
+            }
+
+        case .watchCapacity:
+            // A dropped reply during a 90 s rotation is not a reason to stop:
+            // the gap is itself part of the shape being measured.
+            log(String(format: "CAP_WATCH T+%6.2fs 回读无回复", capacityWatchElapsed()))
+            scheduleCapacityWatchTick(after: Self.watchInterval)
+
         case .watchAfterWrite:
             // One unanswered sample must not end the watch: the point is the
             // shape of the value over thirty seconds, and a dropped reply is
@@ -527,7 +593,8 @@ public final class BfgBleClient: NSObject {
                  .waitDisConfig, .waitDisWriteAck, .waitDisAfter,
                  .waitCapacityCompatScan, .waitRegisterScan, .waitDumpScan,
                  .waitWriteAck, .waitAfterProfile, .waitAfterCapacity,
-                 .watchAfterWrite:
+                 .watchAfterWrite,
+                 .waitCapacityPreRead, .waitCapacityWriteAck, .waitAfterCapacityWrite, .watchCapacity:
                 try handleSessionReply(encrypted)
             default:
                 break
@@ -852,6 +919,57 @@ public final class BfgBleClient: NSObject {
             result.resolvedAfterCapacityRaw = result.afterCapacityRaw
             clearTimeout()
             beginProfileWatch()
+
+        case .waitCapacityPreRead:
+            let preIndex = try requireReadAck(plain, src: 0x10, len: 9)
+            guard preIndex == NinebotFrame.capacityWriteIndex, plain.count >= 9 else { return }
+            clearTimeout()
+            capacityBefore = NinebotFrame.readLe16(plain, offset: 7)
+            log(String(format: "CAP_WRITE_PREREAD 0x%02X=%d",
+                       NinebotFrame.capacityWriteIndex, capacityBefore))
+            proceedCapacityWrite()
+
+        case .waitCapacityWriteAck:
+            guard NinebotFrame.isFrame(plain, src: 0x10, dst: 0x3E, cmd: 0x05) else { return }
+            result.writeAckSeen = true
+            result.writeAckFrame = Hex.encode(plain)
+            log("CAP_WRITE_ACK=" + result.writeAckFrame)
+            scheduleVerify(after: 1.0) { [weak self] in self?.verifyCapacityWriteSafely() }
+
+        case .waitAfterCapacityWrite:
+            let index = try requireReadAck(plain, src: 0x10, len: 9)
+            guard index == NinebotFrame.capacityWriteIndex, plain.count >= 9 else { return }
+            let value = NinebotFrame.readLe16(plain, offset: 7)
+            clearTimeout()
+            if capacityBefore < 0 { capacityBefore = value }
+            capacityAfter = value
+            result.capacityRatedBefore = capacityBefore
+            result.capacityRatedAfter = value
+            log(String(format: "CAP_WRITE_READBACK 0x%02X before=%d after=%d target=%d",
+                       NinebotFrame.capacityWriteIndex, capacityBefore, value, targetCapacity))
+            if value == targetCapacity {
+                result.capacityReadbackVerified = true
+                beginCapacityWatch()
+            } else if capacityVerifyAttempts < NinebotFrame.maxCapacityVerifyAttempts {
+                result.verificationRetried = true
+                scheduleVerify(after: 1.0) { [weak self] in self?.requestCapacityWriteVerify() }
+            } else {
+                fail(String(format: "连续%d次回读 0x%02X 仍为 %d，目标 %d",
+                            capacityVerifyAttempts, NinebotFrame.capacityWriteIndex,
+                            value, targetCapacity))
+            }
+
+        case .watchCapacity:
+            // Length differs per register: 0x00 answers with one byte, the
+            // capacity words with two. Parsing by the echoed index rather than
+            // by a fixed width is what keeps the rotation honest.
+            guard let index = try? requireReadAck(plain, src: 0x10, len: 8) else { return }
+            clearTimeout()
+            let sampled = (index == 0x00)
+                ? Int(plain[7])
+                : (plain.count >= 9 ? NinebotFrame.readLe16(plain, offset: 7) : -1)
+            recordCapacitySample(register: index, value: sampled)
+            scheduleCapacityWatchTick(after: Self.watchInterval)
 
         case .watchAfterWrite:
             // The same read the verify step used; here it is sampled on a
@@ -1222,6 +1340,14 @@ public final class BfgBleClient: NSObject {
         switch operation {
         case .writeDisVoltage:
             beginDisVoltageWrite()
+        case .writeCapacity:
+            guard WriteAccessPolicy.isWritableCapacity(targetCapacity) else {
+                fail("容量写入未获许可，或目标值超出合理范围（5000–100000 mAh）；"
+                    + "本次没有发送写入指令。")
+                return
+            }
+            beginCapacityWrite()
+
         case .writeProfile:
             // A combination the author never validated is a statement about his
             // test coverage, not about the vehicle in front of the rider. Expert
@@ -1403,6 +1529,143 @@ public final class BfgBleClient: NSObject {
         }
         watchLastValue = value
         log(String(format: "WATCH T+%6.2fs profile=0x%02X%@", now, value, note))
+    }
+
+    // MARK: - Capacity write implementation
+
+    /// Reads 0x0E BEFORE anything is written.
+    ///
+    /// Without the old value there is nothing to roll back to, so the read is not
+    /// an optimisation — it is the precondition. A capacity write that cannot say
+    /// what it replaced must not happen at all.
+    private func beginCapacityWrite() {
+        state = .waitCapacityPreRead
+        capacityVerifyAttempts = 0
+        capacityBefore = -1
+        status("正在读取 0x0E 原值（写入前备份）…")
+        send(NinebotFrame.readBfgWord(register: NinebotFrame.capacityWriteIndex))
+        timeout(.waitCapacityPreRead, 4.5, "写入前读取 0x0E 无回复")
+    }
+
+    /// Only reached once the old value is in hand and persisted.
+    private func proceedCapacityWrite() {
+        guard capacityBefore > 0 else {
+            fail("未能读到 0x0E 原值，没有可回滚的备份；本次没有发送写入指令。")
+            return
+        }
+        let frame = NinebotFrame.writeCapacityRated(targetCapacity)
+        log(String(format: "CAP_WRITE_BEGIN target=%d addr=0x%02X before=%d frame=%@",
+                   targetCapacity, NinebotFrame.capacityWriteIndex, capacityBefore,
+                   Hex.encode(frame)))
+        status(String(format: "准备把 0x%02X 从 %d 写成 %d…",
+                      NinebotFrame.capacityWriteIndex, capacityBefore, targetCapacity))
+        state = .waitCapacityWriteAck
+        send(frame)
+        result.writeCommandSent = true
+        scheduleVerify(after: 2.4) { [weak self] in self?.verifyCapacityWriteSafely() }
+    }
+
+    private func verifyCapacityWriteSafely() {
+        guard !finished, state == .waitCapacityWriteAck else { return }
+        state = .waitAfterCapacityWrite
+        requestCapacityWriteVerify()
+    }
+
+    private func requestCapacityWriteVerify() {
+        capacityVerifyAttempts += 1
+        if capacityVerifyAttempts > 1 { result.verificationRetried = true }
+        status(String(format: "正在回读 0x%02X（%d/%d）…",
+                      NinebotFrame.capacityWriteIndex, capacityVerifyAttempts,
+                      NinebotFrame.maxCapacityVerifyAttempts))
+        send(NinebotFrame.readBfgWord(register: NinebotFrame.capacityWriteIndex))
+        timeout(.waitAfterCapacityWrite, 4.5, "容量写入后回读无回复")
+    }
+
+    private func beginCapacityWatch() {
+        capacityWatchStart = DispatchTime.now()
+        capacityWatchTick = 0
+        capacityChangedAt = -1
+        capacityReverted = false
+        capacityMirror = -1
+        capacityProfileSeen = -1
+        state = .watchCapacity
+        log(String(format: "CAP_WATCH_BEGIN 0x0E 已确认 %d；观察 %g 秒，每 %g 秒轮转读 0x0E/0x0F/0x00",
+                   capacityAfter, WriteAccessPolicy.watchSeconds(), Self.watchInterval))
+        status(String(format: "容量已确认；正在观察 %g 秒，同时盯着档位和镜像寄存器…",
+                      WriteAccessPolicy.watchSeconds()))
+        scheduleCapacityWatchTick(after: Self.watchInterval)
+    }
+
+    private func scheduleCapacityWatchTick(after seconds: Double) {
+        capacityWatchTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.sendCapacityWatchProbe() }
+        capacityWatchTimer = work
+        queue.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func sendCapacityWatchProbe() {
+        guard !finished, state == .watchCapacity else { return }
+        if capacityWatchElapsed() >= WriteAccessPolicy.watchSeconds() {
+            endCapacityWatch()
+            return
+        }
+        let register = Self.capacityProbeRotation[capacityWatchTick % Self.capacityProbeRotation.count]
+        capacityWatchTick += 1
+        send(NinebotFrame.readBfgWord(register: register))
+        timeout(.watchCapacity, 2.0, "容量观察窗口回读无回复")
+    }
+
+    /// One sample. Each register keeps its own last value so a change can be
+    /// attributed to the register that actually moved.
+    private func recordCapacitySample(register: Int, value: Int) {
+        let now = capacityWatchElapsed()
+        var note = ""
+        switch register {
+        case NinebotFrame.capacityWriteIndex:
+            if capacityAfter >= 0, value != capacityAfter, capacityChangedAt < 0 {
+                capacityChangedAt = now
+                capacityReverted = true
+                note = String(format: " ← 变化 %d→%d", capacityAfter, value)
+            }
+            capacityAfter = value
+        case 0x0F:
+            if capacityMirror >= 0, value != capacityMirror {
+                note = String(format: " ← 变化 %d→%d", capacityMirror, value)
+                if capacityChangedAt < 0 { capacityChangedAt = now }
+            }
+            capacityMirror = value
+        default:
+            if capacityProfileSeen >= 0, value != capacityProfileSeen {
+                note = String(format: " ← 变化 0x%02X→0x%02X", capacityProfileSeen, value)
+                if capacityChangedAt < 0 { capacityChangedAt = now }
+            }
+            capacityProfileSeen = value
+        }
+        log(String(format: "CAP_WATCH T+%6.2fs 0x%02X=%d (profile=%@) %@",
+                   now, register, value,
+                   capacityProfileSeen < 0 ? "-" : String(format: "0x%02X", capacityProfileSeen),
+                   note))
+    }
+
+    private func endCapacityWatch() {
+        // Recorded even when the value reverted: "what it became" is the
+        // finding, and an export that only carried the target would hide it.
+        result.capacityRatedBefore = capacityBefore
+        result.capacityRatedAfter = capacityAfter
+        capacityWatchTimer?.cancel()
+        capacityWatchTimer = nil
+        log(String(format: "CAP_WATCH_END 0x0E=%d 0x0F=%d profile=%@ changedAt=%@",
+                   capacityAfter, capacityMirror,
+                   capacityProfileSeen < 0 ? "-" : String(format: "0x%02X", capacityProfileSeen),
+                   capacityChangedAt < 0 ? "none" : String(format: "T+%.2fs", capacityChangedAt)))
+        if capacityReverted {
+            finish(String(format:
+                "容量写入 %d mAh 曾生效，但在 T+%.2fs 被车辆改回。详见 CAP_WATCH 行。",
+                targetCapacity, capacityChangedAt))
+        } else {
+            finish(String(format: "容量写入 %d mAh 已确认并保持稳定 %g 秒。",
+                          targetCapacity, WriteAccessPolicy.watchSeconds()))
+        }
     }
 
     private func endProfileWatch() {

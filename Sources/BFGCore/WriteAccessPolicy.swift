@@ -66,6 +66,30 @@ public enum WriteAccessPolicy {
         return isDashboard ? TimedRiskGate.dashboardSeconds : TimedRiskGate.meterSeconds
     }
 
+    // MARK: - Capacity-register write (separate release)
+
+    /// Capacity writes are a *narrower* release than expert mode, and the two
+    /// are deliberately independent.
+    ///
+    /// Expert mode releases "nobody validated this combination". This releases
+    /// "write to a second register at all", which is a strictly larger physical
+    /// power: 0x0E feeds the state-of-charge the rider actually reads, so a wrong
+    /// word here shows up immediately and is *not* corrected by the vehicle's own
+    /// consistency check — that check restores the profile, not the capacity.
+    ///
+    /// Off by default, session-scoped, and never implied by expert mode.
+    public static var allowsCapacityWrite = false
+
+    /// Plausibility bounds shared with the read-side resolver, so a value the
+    /// tool would refuse to *believe* is also one it refuses to *write*.
+    public static func isWritableCapacity(_ milliAh: Int) -> Bool {
+        allowsCapacityWrite && CapacityCompatibilityResolver.isPlausible(milliAh)
+    }
+
+    /// The one address a capacity write may target. Kept here rather than in the
+    /// builder so policy and protocol cannot drift apart.
+    public static var capacityWriteIndex: Int { NinebotFrame.capacityWriteIndex }
+
     /// And watches the profile register for longer afterwards, because a forced
     /// revert is exactly what an unvalidated vehicle is expected to do.
     public static func watchSeconds() -> Double { expertMode ? 90 : 30 }

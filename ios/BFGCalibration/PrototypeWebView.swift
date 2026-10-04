@@ -304,6 +304,15 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "expert-mode":
             requestExpertModeToggle()
 
+        case "capacity-enable":
+            requestCapacityEnable()
+
+        case "capacity-write":
+            requestCapacityWrite()
+
+        case "capacity-restore":
+            requestCapacityRestore()
+
         case "restore-first":
             requestRestore(first: true)
 
@@ -701,6 +710,145 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         presenter.present(alert, animated: true)
     }
 
+    // MARK: - Rated-capacity register (0x0E)
+
+    /// The only rider-facing path that writes the second register.
+    ///
+    /// Nothing about the normal write flow reaches this: it needs its own policy
+    /// flag, its own value bound, its own pre-read gate inside the client, and
+    /// its own confirmation here. The three are independent on purpose — a rider
+    /// who released "unvalidated model" has not thereby agreed to let the tool
+    /// rewrite the number the state-of-charge is computed from.
+    /// The third switch, and the one with the largest physical reach.
+    ///
+    /// Expert mode releases "nobody validated this". This releases "write to a
+    /// second register", and that register is the number the state-of-charge is
+    /// computed from — so a wrong value here is visible on the dashboard
+    /// immediately and is *not* corrected by the vehicle's own consistency
+    /// check, which restores the profile rather than the capacity.
+    ///
+    /// Session-scoped like the others: nothing persists it, so the next rider of
+    /// this phone does not inherit a second write site.
+    private func requestCapacityEnable() {
+        let turningOn = !WriteAccessPolicy.allowsCapacityWrite
+        let alert = UIAlertController(
+            title: turningOn ? "开启容量寄存器写入" : "关闭容量寄存器写入",
+            message: turningOn
+                ? "将允许工具写第二个寄存器：计量模块的额定容量 0x0E。\n\n"
+                    + "为什么需要它：实测确认只写档位会在约 6.5 秒后被车辆改回，"
+                    + "因为它与 0x0E 的值不自洽。要让改动站住，两者必须一起改。\n\n"
+                    + "风险比档位写入更大：0x0E 直接参与电量计算，写错会让电量显示异常，"
+                    + "而且车辆的自洽性检查不会帮你改回来（它只恢复档位）。\n\n"
+                    + "仍然保留的护栏：写入前必须先读到原值做备份，读不到就不发任何指令；"
+                    + "写后保持连接观察 90 秒；日志记录 0x0E / 0x0F / 档位三个寄存器。\n\n"
+                    + "允许范围 5000–100000 mAh。本开关仅本次运行有效。"
+                : "关闭后，容量寄存器的写入与恢复都会被拒绝。已保存的备份不受影响。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: turningOn ? "我已知晓，开启" : "确认关闭",
+                                      style: .destructive) { [weak self] _ in
+            WriteAccessPolicy.allowsCapacityWrite = turningOn
+            self?.state["capacityWriteEnabled"] = turningOn
+            self?.pushState()
+        })
+        presentAlert(alert)
+    }
+
+    private func requestCapacityWrite() {
+        guard WriteAccessPolicy.allowsCapacityWrite else {
+            state["errorMessage"] = "容量寄存器写入未开启。它是独立开关，不与专家模式联动："
+                + "专家模式放开的是「没验证过的车型」，这里放开的是「多写一个寄存器」，"
+                + "后者物理权限更大——0x0E 直接参与电量计算。请先在设置页开启。"
+            state["modal"] = "operation-failed"
+            pushState()
+            return
+        }
+        let known = backupStore.ratedCapacityBackup(serial: serial)
+        let alert = UIAlertController(
+            title: "写入额定容量寄存器 0x0E",
+            message: "这会改动计量模块用来算电量的额定容量。\n\n"
+                + "工具会先读原值做备份，读不到就一个字节都不发。"
+                + "写入后保持连接观察 90 秒，并在日志里记录 0x0E / 0x0F / 档位三个寄存器的变化。\n\n"
+                + (known > 0 ? "当前已备份的原值：\(known) mAh\n" : "尚未建立 0x0E 备份（本次写入会建立）\n")
+                + "允许范围 5000–100000 mAh。",
+            preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "目标容量，例如 55000"
+            field.keyboardType = .numberPad
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: "确认写入", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            let text = alert.textFields?.first?.text ?? ""
+            guard let value = Int(text.trimmingCharacters(in: .whitespaces)),
+                  WriteAccessPolicy.isWritableCapacity(value) else {
+                self.state["errorMessage"] = "目标容量无效：需要在 5000–100000 mAh 之间，"
+                    + "并且已经开启容量寄存器写入。本次没有发送任何指令。"
+                self.state["modal"] = "operation-failed"
+                self.pushState()
+                return
+            }
+            self.goTo("write-progress")
+            self.startClient(record: self.placeholderRecord(serial: self.serial),
+                             operation: .writeCapacity,
+                             targetCapacity: value)
+        })
+        presentAlert(alert)
+    }
+
+    /// Puts the backed-up 0x0E value back.
+    ///
+    /// Storing a backup without a way to apply it is not a safety net, it is
+    /// decoration. This is the counterpart that makes the backup real, and it
+    /// goes through the same write path — same pre-read gate, same watch, same
+    /// logging — so a rollback is as observable as the write it undoes.
+    private func requestCapacityRestore() {
+        guard WriteAccessPolicy.allowsCapacityWrite else {
+            state["errorMessage"] = "容量寄存器写入未开启，恢复同样被关闭。请先在设置页开启。"
+            state["modal"] = "operation-failed"
+            pushState()
+            return
+        }
+        let first = backupStore.ratedCapacityBackup(serial: serial)
+        let recent = backupStore.prewriteRatedCapacity(serial: serial)
+        let target = recent > 0 ? recent : first
+        guard target > 0 else {
+            state["errorMessage"] = "当前车辆没有 0x0E 备份，无法恢复。"
+                + "备份会在第一次成功读取到 0x0E 时建立。"
+            state["modal"] = "operation-failed"
+            pushState()
+            return
+        }
+        let alert = UIAlertController(
+            title: "恢复 0x0E 到备份值",
+            message: "目标值：\(target) mAh\n"
+                + "（首次备份 \(first > 0 ? String(first) : "无")，"
+                + "最近写入前 \(recent > 0 ? String(recent) : "无")）\n\n"
+                + "恢复同样是写入：会先读当前值做备份，写后观察 90 秒。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: "确认恢复", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            self.goTo("write-progress")
+            self.startClient(record: self.placeholderRecord(serial: self.serial),
+                             operation: .writeCapacity,
+                             targetCapacity: target)
+        })
+        presentAlert(alert)
+    }
+
+    /// Single presentation route for alerts, matching the one the expert-mode
+    /// switch already uses.
+    private func presentAlert(_ alert: UIAlertController) {
+        guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first,
+              var presenter = (scene.windows.first(where: { $0.isKeyWindow })
+                                ?? scene.windows.first)?.rootViewController
+        else { return }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        presenter.present(alert, animated: true)
+    }
+
     private func requestPostWriteReread() {
         guard let target = lastPostWriteTarget else {
             refreshRead()
@@ -915,6 +1063,7 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
 
     private func startClient(record: DeviceRecord, operation: BfgBleClient.Operation,
                              targetProfile: Int = -1,
+                             targetCapacity: Int = 0,
                              expectedDisConfigRaw: Int = -1,
                              allowUnverifiedDis: Bool = false,
                              dumpModules: [Int] = []) {
@@ -922,6 +1071,7 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         activeOperation = operation
         let newClient = BfgBleClient(record: record, operation: operation,
                                      targetProfile: targetProfile,
+                                     targetCapacity: targetCapacity,
                                      expectedDisConfigRaw: expectedDisConfigRaw,
                                      allowUnverifiedDis: allowUnverifiedDis,
                                      dumpModules: dumpModules,
@@ -1450,6 +1600,19 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
     }
 
     private func handleFinish(_ result: BfgBleClient.Result) {
+        // A capacity write hands back both the value it replaced and the value
+        // it produced. Persisting the first is what makes a rollback possible;
+        // the second is kept so the export shows what the register actually
+        // ended up as, not merely what was asked for.
+        state["capacityWriteEnabled"] = WriteAccessPolicy.allowsCapacityWrite
+        if result.capacityRatedBefore > 0 {
+            backupStore.saveRatedCapacityBackupIfAbsent(serial: result.serial,
+                                                        raw: result.capacityRatedBefore)
+            backupStore.savePrewriteRatedCapacity(serial: result.serial,
+                                                  raw: result.capacityRatedBefore)
+            state["ratedCapacityBackup"] = result.capacityRatedBefore
+            refreshBackupState(serial: result.serial)
+        }
         state["pairScanning"] = false
         stopScanCountdown()
 

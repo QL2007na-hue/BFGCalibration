@@ -688,6 +688,17 @@ globalThis.lucide = {createIcons() {
           <button class="nb-secondary" style="margin-top:12px" type="button" data-action="expert-mode">${state.expertMode ? '关闭专家模式' : '开启专家模式（自担风险）'}</button>
           ${state.expertMode ? `<div class="nb-alert warning" style="margin-top:12px">${icon('triangle-alert')}<span>专家模式已开启。仅本次运行有效，重启应用后自动关闭。</span></div>` : ''}
         </section>
+        <section class="nb-card nb-section">
+          <div class="nb-section-head"><h3 class="nb-section-title">额定容量寄存器 0x0E</h3></div>
+          <p class="nb-label">计量模块算电量用的额定容量就存在这里。实测发现：只写档位（0x00）会在约 6.5 秒后被车辆改回，因为它与这里的值不自洽——所以要让改动站住，得连这个寄存器一起写。</p>
+          <p class="nb-label">写入前会先读原值做备份，读不到就一个字节都不发；写后保持连接观察 90 秒，并在日志里记录 0x0E / 0x0F / 档位三个寄存器的变化。</p>
+          <div class="nb-label" style="margin-top:12px">已备份的 0x0E 原值</div>
+          <div class="nb-value">${state.ratedCapacityBackup ? esc(state.ratedCapacityBackup) : '未建立'}</div>
+          <button class="nb-secondary" style="margin-top:12px" type="button" data-action="capacity-enable">${state.capacityWriteEnabled ? '关闭容量寄存器写入' : '开启容量寄存器写入（独立开关）'}</button>
+          <button class="nb-secondary" style="margin-top:10px" type="button" data-action="capacity-write">写入额定容量</button>
+          <button class="nb-secondary" style="margin-top:10px" type="button" data-action="capacity-restore">恢复 0x0E 到备份值</button>
+          ${state.capacityWriteEnabled ? `<div class="nb-alert warning" style="margin-top:12px">${icon('triangle-alert')}<span>容量寄存器写入已开启。仅本次运行有效，重启应用后自动关闭。</span></div>` : ''}
+        </section>
         <section class="nb-section"><div class="nb-section-head"><h3 class="nb-section-title">维护与说明</h3></div>
           <div class="nb-list"><button class="nb-list-item" type="button" data-action="export-diag"><div class="nb-grow"><div class="nb-value">导出最近一次诊断</div><div class="nb-label">仅在需要排查连接问题时使用</div></div>${icon('chevron-right')}</button>
           <button class="nb-list-item" type="button" data-action="show-license"><div class="nb-grow"><div class="nb-value">关于与使用声明</div><div class="nb-label">版本 ${esc(state.appVersion)}</div></div>${icon('chevron-right')}</button>
