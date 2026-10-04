@@ -86,6 +86,30 @@ public enum WriteAccessPolicy {
         allowsCapacityWrite && CapacityCompatibilityResolver.isPlausible(milliAh)
     }
 
+    // MARK: - Register-write probe (the narrowest release)
+
+    /// The only registers a probe run may attempt to write.
+    ///
+    /// Exactly the addresses the read-side resolver already samples for capacity,
+    /// because those are the ones whose values the tool can read and therefore
+    /// write back unchanged. The list is closed on purpose: a probe answers
+    /// "which of these accept a write", it is not a licence to write wherever a
+    /// caller names.
+    public static let probeRegisterAllowlist: [Int] = [0x0E, 0x0F, 0x1A, 0x1C, 0x1E]
+
+    /// Probing is its own release, and the narrowest of the three.
+    ///
+    /// It is not implied by expert mode and not implied by the capacity switch.
+    /// What it grants is small — every probe writes a register its own current
+    /// value back, so a successful probe changes nothing — but it is still a
+    /// wider set of write targets than anything before it, and it is gated
+    /// accordingly.
+    public static var allowsRegisterProbe = false
+
+    public static func canProbe(register: Int) -> Bool {
+        allowsRegisterProbe && probeRegisterAllowlist.contains(register)
+    }
+
     /// The one address a capacity write may target. Kept here rather than in the
     /// builder so policy and protocol cannot drift apart.
     public static var capacityWriteIndex: Int { NinebotFrame.capacityWriteIndex }

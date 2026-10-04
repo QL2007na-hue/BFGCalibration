@@ -304,6 +304,12 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "expert-mode":
             requestExpertModeToggle()
 
+        case "probe-enable":
+            requestProbeEnable()
+
+        case "probe-registers":
+            requestProbeRun()
+
         case "capacity-enable":
             requestCapacityEnable()
 
@@ -719,6 +725,68 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     /// its own confirmation here. The three are independent on purpose — a rider
     /// who released "unvalidated model" has not thereby agreed to let the tool
     /// rewrite the number the state-of-charge is computed from.
+    // MARK: - Register-write probe
+
+    /// The fourth switch, and the one that answers a question rather than making
+    /// a change.
+    ///
+    /// 0x0E answered a well-formed write with total silence — no reply, no ACK,
+    /// value unchanged across three re-reads. Before concluding that the capacity
+    /// route is closed, it is worth asking whether ANY of the capacity candidates
+    /// accept a write. Every probe writes a register its own current value back,
+    /// so the vehicle ends where it started; what is measured is the ACK.
+    private func requestProbeEnable() {
+        let turningOn = !WriteAccessPolicy.allowsRegisterProbe
+        let alert = UIAlertController(
+            title: turningOn ? "开启寄存器写入探测" : "关闭寄存器写入探测",
+            message: turningOn
+                ? "将允许工具向这五个寄存器各写一次：\n"
+                    + WriteAccessPolicy.probeRegisterAllowlist
+                        .map { String(format: "0x%02X", $0) }.joined(separator: "  ")
+                    + "\n\n关键是：每个寄存器写回去的都是它自己的当前值，"
+                    + "所以探测成功也不会改变车辆的任何参数。\n\n"
+                    + "能得到的结论只有一条——这些寄存器里哪些接受写入。"
+                    + "0x0E 已经试过，它以完全沉默回应，所以需要先知道剩下的有没有机会。\n\n"
+                    + "地址白名单在协议层写死，调用方传别的地址会被直接拒绝。\n\n"
+                    + "本开关仅本次运行有效，且不被专家模式或容量开关连带开启。"
+                : "关闭后，探测按钮会被拒绝。已保存的备份不受影响。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: turningOn ? "我已知晓，开启" : "确认关闭",
+                                      style: .destructive) { [weak self] _ in
+            WriteAccessPolicy.allowsRegisterProbe = turningOn
+            self?.state["probeEnabled"] = turningOn
+            self?.pushState()
+        })
+        presentAlert(alert)
+    }
+
+    private func requestProbeRun() {
+        guard WriteAccessPolicy.allowsRegisterProbe else {
+            state["errorMessage"] = "寄存器写入探测未开启，请先在设置页开启。"
+            state["modal"] = "operation-failed"
+            pushState()
+            return
+        }
+        let names = WriteAccessPolicy.probeRegisterAllowlist
+            .map { String(format: "0x%02X", $0) }.joined(separator: "  ")
+        let alert = UIAlertController(
+            title: "探测容量候选寄存器",
+            message: "将依次向 \(names) 各写一次，每次写的都是它当前的读数值。"
+                + "\n\n车辆参数不会因为这个探测而改变；探测只是问它们接不接受写入。\n\n"
+                + "每个地址会走完整流程：先读当前值 → 写回同一个值 → 等 ACK → 回读确认。"
+                + "\n\n结果写在日志的 PROBE_ 行里。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: "开始探测", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            self.goTo("write-progress")
+            self.startClient(record: self.placeholderRecord(serial: self.serial),
+                             operation: .probeRegisterWrites)
+        })
+        presentAlert(alert)
+    }
+
     /// The third switch, and the one with the largest physical reach.
     ///
     /// Expert mode releases "nobody validated this". This releases "write to a
@@ -1957,7 +2025,7 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
             state["screen"] = "pair-ready"
             state["modal"] = "operation-failed"
         case .readOnly, .compareRead, .discoverVehicles, .writeProfile, .writeDisVoltage,
-             .writeCapacity:
+             .writeCapacity, .probeRegisterWrites:
             state["screen"] = "home"
             state["modal"] = "operation-failed"
         }

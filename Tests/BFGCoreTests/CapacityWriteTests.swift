@@ -125,4 +125,50 @@ final class CapacityWriteTests: XCTestCase {
         XCTAssertEqual(store.ratedCapacityBackup(serial: "T2"), -1)
         XCTAssertFalse(store.savePrewriteRatedCapacity(serial: "T2", raw: 0))
     }
+
+    // MARK: - Probe register allowlist
+
+    /// A probe writes a register its own current value back, so a successful
+    /// probe changes nothing. What it must never do is reach an address nobody
+    /// vetted, which is why the builder checks the allowlist itself.
+    func testProbeBuilderRefusesAddressesOffTheAllowlist() {
+        for register in [0x00, 0x01, 0x02, 0x0C, 0x1C + 1, 0xFF, -1] {
+            XCTAssertNil(NinebotFrame.writeBfgWord(register: register, value: 26000),
+                         "builder accepted unvetted register \(register)")
+        }
+    }
+
+    func testProbeBuilderAcceptsTheAllowlist() {
+        for register in WriteAccessPolicy.probeRegisterAllowlist {
+            let frame = NinebotFrame.writeBfgWord(register: register, value: 26000)
+            XCTAssertNotNil(frame)
+            XCTAssertEqual(frame?.count, 9)
+            XCTAssertEqual(frame?[6], UInt8(register))
+            XCTAssertEqual(frame?[5], 0x02)
+            XCTAssertEqual(frame?[4], 0x10)
+        }
+    }
+
+    func testProbeAllowlistStaysClosed() {
+        XCTAssertEqual(WriteAccessPolicy.probeRegisterAllowlist,
+                       CapacityCompatibilityResolver.registers,
+                       "probe targets drifted from the registers the read side trusts")
+    }
+
+    func testProbeIsOffByDefaultAndIndependent() {
+        XCTAssertFalse(WriteAccessPolicy.allowsRegisterProbe)
+        XCTAssertFalse(WriteAccessPolicy.canProbe(register: 0x0E))
+        WriteAccessPolicy.expertMode = true
+        XCTAssertFalse(WriteAccessPolicy.canProbe(register: 0x0E))
+        WriteAccessPolicy.allowsCapacityWrite = true
+        XCTAssertFalse(WriteAccessPolicy.canProbe(register: 0x0E))
+        WriteAccessPolicy.allowsRegisterProbe = true
+        XCTAssertTrue(WriteAccessPolicy.canProbe(register: 0x0E))
+        XCTAssertFalse(WriteAccessPolicy.canProbe(register: 0x00))
+    }
+
+    func testProbeWordIsLittleEndian() {
+        XCTAssertEqual(NinebotFrame.writeBfgWord(register: 0x0F, value: 26000),
+                       [0x5A, 0xA5, 0x02, 0x3E, 0x10, 0x02, 0x0F, 0x90, 0x65])
+    }
 }

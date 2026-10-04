@@ -84,6 +84,24 @@ public enum NinebotFrame {
                 UInt8(clamped & 0xFF), UInt8((clamped >> 8) & 0xFF)]
     }
 
+    /// Writes a 16-bit word to a probe register, or nothing if the address is not
+    /// on the allowlist.
+    ///
+    /// Unlike `writeCapacityRated`, this one takes an address — the whole point is
+    /// to ask which of the capacity candidates accept a write. That makes the
+    /// allowlist check load-bearing: it happens here, in the builder, so a probe
+    /// run can never become a general-purpose register writer by passing a
+    /// different index.
+    ///
+    /// Returns nil rather than trapping so the caller has to handle a refusal.
+    public static func writeBfgWord(register: Int, value: Int) -> [UInt8]? {
+        guard WriteAccessPolicy.probeRegisterAllowlist.contains(register) else { return nil }
+        let clamped = max(0, min(0xFFFF, value))
+        return [0x5A, 0xA5, 0x02, 0x3E, 0x10, 0x02,
+                UInt8(register & 0xFF),
+                UInt8(clamped & 0xFF), UInt8((clamped >> 8) & 0xFF)]
+    }
+
     /// The register `writeCapacityRated` targets. Exposed so callers can log and
     /// verify against the same constant instead of repeating the literal.
     public static let capacityWriteIndex = 0x0E

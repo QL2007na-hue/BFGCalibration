@@ -47,8 +47,8 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: com.bfgtools.calibration.imported
         PRODUCT_NAME: BFGCalibration
-        MARKETING_VERSION: "2.1.3"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "2.1.4"
+        CURRENT_PROJECT_VERSION: "5"
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO

@@ -32,6 +32,13 @@ public final class BfgBleClient: NSObject {
         /// write site. Separate from `.writeProfile` on purpose: it carries its
         /// own policy flag, its own rollback slot and its own watch window.
         case writeCapacity
+        /// Asks which capacity candidates accept a write at all.
+        ///
+        /// Each address is written its OWN current value back, so a successful
+        /// probe changes nothing on the vehicle — it only distinguishes "this
+        /// register accepts a write" from "this register is read-only", which is
+        /// the question 0x0E answered with silence.
+        case probeRegisterWrites
     }
 
     public protocol Listener: AnyObject {
@@ -98,6 +105,11 @@ public final class BfgBleClient: NSObject {
         /// The rated-capacity register (0x0E) as it stood before and after a
         /// capacity write. Exposed so the coordinator can persist both: the
         /// before value is the rollback target, the after value is the evidence.
+        /// Which capacity candidates accepted a probe write, and which stayed
+        /// silent. The second list is the more useful one: it says the capacity
+        /// route needs a different mechanism, not a different value.
+        public var probeWritable: [Int] = []
+        public var probeReadOnly: [Int] = []
         public var capacityRatedBefore = -1
         public var capacityRatedAfter = -1
 
@@ -157,6 +169,7 @@ public final class BfgBleClient: NSObject {
         case waitWriteAck, waitAfterProfile, waitAfterCapacity
         case watchAfterWrite
         case waitCapacityPreRead, waitCapacityWriteAck, waitAfterCapacityWrite, watchCapacity
+        case probePreRead, probeWrite, probeVerify
         case done
     }
 
@@ -230,6 +243,14 @@ public final class BfgBleClient: NSObject {
     private var watchStart = DispatchTime.now()
     private var watchChangedAt: Double = -1
     private var watchLastValue = -1
+    /// Every transition seen during the window, in order.
+    ///
+    /// Reporting only the first one is what made a configuration rewrite look
+    /// like a single revert: the real vehicle went 0xD0 -> 0x50 -> 0x00 -> 0x50
+    /// inside seven seconds, and the summary named only the first hop. The shape
+    /// is the finding — three hops is an upstream module rewriting the register,
+    /// one hop is a restore — so the whole trace is kept and reported.
+    private var watchTransitions: [String] = []
 
     // MARK: - Capacity-register write (0x0E) and its watch
     //
@@ -258,6 +279,25 @@ public final class BfgBleClient: NSObject {
     /// Probed in strict rotation so a three-register round still samples the
     /// primary register often enough to timestamp a revert to within ~1.5 s.
     private static let capacityProbeRotation = [0x0E, 0x0F, 0x00]
+
+    // MARK: - Register-write probe
+    //
+    // 0x0E answered a well-formed write frame with total silence: no BLE_RX, no
+    // WRITE_ACK, and the value unchanged across three re-reads. That is a
+    // different failure from the profile byte, which ACKs in ~13 ms and is then
+    // reverted by an upstream module. So before giving up on the capacity route,
+    // the tool asks the only question that matters: do ANY of the capacity
+    // registers accept a write?
+    //
+    // Every probe writes back the value it just read, so the vehicle ends where
+    // it started. What is being measured is the ACK, not the value.
+    private var probeQueue: [Int] = []
+    private var probeCursor = 0
+    private var probeRegister = -1
+    private var probeValue = -1
+    private var probeAckSeen = false
+    private var probeWritable: [Int] = []
+    private var probeReadOnly: [Int] = []
 
     private func capacityWatchElapsed() -> Double {
         Double(DispatchTime.now().uptimeNanoseconds &- capacityWatchStart.uptimeNanoseconds)
@@ -482,6 +522,17 @@ public final class BfgBleClient: NSObject {
                 afterDisConfigRead()
             }
 
+        case .probePreRead:
+            log(String(format: "PROBE_RESULT 0x%02X 预读无回复，跳过", probeRegister))
+            advanceProbe()
+
+        case .probeVerify:
+            // A silent re-read after a silent write is the read-only signature,
+            // not an error: 0x0E behaved exactly this way.
+            log(String(format: "PROBE_RESULT 0x%02X 回读无回复 → 只读", probeRegister))
+            probeReadOnly.append(probeRegister)
+            advanceProbe()
+
         case .waitCapacityPreRead:
             // No pre-read, no backup, no write. This is the one timeout in the
             // capacity path that must terminate rather than retry into a write.
@@ -594,7 +645,8 @@ public final class BfgBleClient: NSObject {
                  .waitCapacityCompatScan, .waitRegisterScan, .waitDumpScan,
                  .waitWriteAck, .waitAfterProfile, .waitAfterCapacity,
                  .watchAfterWrite,
-                 .waitCapacityPreRead, .waitCapacityWriteAck, .waitAfterCapacityWrite, .watchCapacity:
+                 .waitCapacityPreRead, .waitCapacityWriteAck, .waitAfterCapacityWrite, .watchCapacity,
+                 .probePreRead, .probeWrite, .probeVerify:
                 try handleSessionReply(encrypted)
             default:
                 break
@@ -919,6 +971,27 @@ public final class BfgBleClient: NSObject {
             result.resolvedAfterCapacityRaw = result.afterCapacityRaw
             clearTimeout()
             beginProfileWatch()
+
+        case .probePreRead:
+            let probePre = try requireReadAck(plain, src: 0x10, len: 9)
+            guard probePre == probeRegister, plain.count >= 9 else { return }
+            clearTimeout()
+            probeValue = NinebotFrame.readLe16(plain, offset: 7)
+            log(String(format: "PROBE_PREREAD 0x%02X=%d", probeRegister, probeValue))
+            proceedProbeWrite()
+
+        case .probeWrite:
+            guard NinebotFrame.isFrame(plain, src: 0x10, dst: 0x3E, cmd: 0x05) else { return }
+            probeAckSeen = true
+            log(String(format: "PROBE_ACK 0x%02X %@", probeRegister, Hex.encode(plain)))
+            clearTimeout()
+            finishProbeRegister()
+
+        case .probeVerify:
+            let probeAfter = try requireReadAck(plain, src: 0x10, len: 9)
+            guard probeAfter == probeRegister, plain.count >= 9 else { return }
+            clearTimeout()
+            concludeProbeRegister(NinebotFrame.readLe16(plain, offset: 7))
 
         case .waitCapacityPreRead:
             let preIndex = try requireReadAck(plain, src: 0x10, len: 9)
@@ -1340,6 +1413,13 @@ public final class BfgBleClient: NSObject {
         switch operation {
         case .writeDisVoltage:
             beginDisVoltageWrite()
+        case .probeRegisterWrites:
+            guard WriteAccessPolicy.allowsRegisterProbe else {
+                fail("寄存器写入探测未开启；本次没有发送任何写入指令。")
+                return
+            }
+            beginProbeRun()
+
         case .writeCapacity:
             guard WriteAccessPolicy.isWritableCapacity(targetCapacity) else {
                 fail("容量写入未获许可，或目标值超出合理范围（5000–100000 mAh）；"
@@ -1491,6 +1571,7 @@ public final class BfgBleClient: NSObject {
         watchStart = DispatchTime.now()
         watchChangedAt = -1
         watchLastValue = -1
+        watchTransitions = []
         state = .watchAfterWrite
         log(String(format: "WATCH_BEGIN 写入已确认；保持连接 %g 秒，每 %g 秒只读回读 0x00",
                    watchDuration, Self.watchInterval))
@@ -1525,7 +1606,10 @@ public final class BfgBleClient: NSObject {
             note = value == targetProfile ? " (= 目标值)" : " (≠ 目标值)"
         } else if value != watchLastValue {
             if watchChangedAt < 0 { watchChangedAt = now }
-            note = String(format: " ← 变化 0x%02X→0x%02X", watchLastValue, value)
+            watchTransitions.append(String(format: "T+%.2fs 0x%02X→0x%02X",
+                                           now, watchLastValue, value))
+            note = String(format: " ← 变化 0x%02X→0x%02X（第 %d 次）",
+                          watchLastValue, value, watchTransitions.count)
         }
         watchLastValue = value
         log(String(format: "WATCH T+%6.2fs profile=0x%02X%@", now, value, note))
@@ -1668,13 +1752,104 @@ public final class BfgBleClient: NSObject {
         }
     }
 
+    // MARK: - Register-write probe implementation
+
+    private func beginProbeRun() {
+        probeQueue = WriteAccessPolicy.probeRegisterAllowlist
+        probeCursor = 0
+        probeWritable = []
+        probeReadOnly = []
+        let names = probeQueue.map { String(format: "0x%02X", $0) }.joined(separator: " ")
+        log("PROBE_BEGIN 候选 \(probeQueue.count) 个：\(names)（每个都写回它自己的当前值，车辆状态不变）")
+        status("开始探测 \(probeQueue.count) 个容量候选寄存器；每个都写回原值…")
+        advanceProbe()
+    }
+
+    private func advanceProbe() {
+        guard probeCursor < probeQueue.count else {
+            endProbeRun()
+            return
+        }
+        probeRegister = probeQueue[probeCursor]
+        probeCursor += 1
+        probeValue = -1
+        probeAckSeen = false
+        state = .probePreRead
+        status(String(format: "探测 0x%02X（%d/%d）：先读当前值…",
+                      probeRegister, probeCursor, probeQueue.count))
+        send(NinebotFrame.readBfgWord(register: probeRegister))
+        timeout(.probePreRead, 4.5, String(format: "探测 0x%02X 预读无回复", probeRegister))
+    }
+
+    /// Writes the value that was just read. Nothing changes if it lands.
+    private func proceedProbeWrite() {
+        guard probeValue >= 0 else {
+            log(String(format: "PROBE_RESULT 0x%02X 读不到当前值，跳过", probeRegister))
+            advanceProbe()
+            return
+        }
+        guard let frame = NinebotFrame.writeBfgWord(register: probeRegister, value: probeValue) else {
+            log(String(format: "PROBE_RESULT 0x%02X 不在白名单，跳过", probeRegister))
+            advanceProbe()
+            return
+        }
+        log(String(format: "PROBE_WRITE 0x%02X value=%d frame=%@",
+                   probeRegister, probeValue, Hex.encode(frame)))
+        state = .probeWrite
+        send(frame)
+        result.writeCommandSent = true
+        // No ACK is itself an answer, so the timeout advances instead of failing.
+        scheduleVerify(after: 2.0) { [weak self] in self?.finishProbeRegister() }
+    }
+
+    /// Settles one register and moves to the next.
+    private func finishProbeRegister() {
+        guard !finished, state == .probeWrite || state == .probeVerify else { return }
+        state = .probeVerify
+        send(NinebotFrame.readBfgWord(register: probeRegister))
+        timeout(.probeVerify, 3.0, String(format: "探测 0x%02X 回读无回复", probeRegister))
+    }
+
+    private func concludeProbeRegister(_ after: Int) {
+        let accepted = probeAckSeen && after == probeValue
+        if accepted {
+            probeWritable.append(probeRegister)
+        } else {
+            probeReadOnly.append(probeRegister)
+        }
+        log(String(format: "PROBE_RESULT 0x%02X ack=%@ before=%d after=%d → %@",
+                   probeRegister, probeAckSeen ? "有" : "无",
+                   probeValue, after, accepted ? "可写" : "只读"))
+        advanceProbe()
+    }
+
+    private func endProbeRun() {
+        let w = probeWritable.map { String(format: "0x%02X", $0) }.joined(separator: " ")
+        let r = probeReadOnly.map { String(format: "0x%02X", $0) }.joined(separator: " ")
+        log("PROBE_END 可写: \(w.isEmpty ? "无" : w) | 只读: \(r.isEmpty ? "无" : r)")
+        result.probeWritable = probeWritable
+        result.probeReadOnly = probeReadOnly
+        if probeWritable.isEmpty {
+            finish("探测完成：\(probeQueue.count) 个候选寄存器全部不接受写入。"
+                + "容量这条路需要另一条写入路径，详见 PROBE_ 日志。")
+        } else {
+            finish("探测完成：可写 \(w)；只读 \(r.isEmpty ? "无" : r)。详见 PROBE_ 日志。")
+        }
+    }
+
     private func endProfileWatch() {
         watchTimer?.cancel()
         watchTimer = nil
-        if watchChangedAt >= 0 {
+        if !watchTransitions.isEmpty {
+            let trace = watchTransitions.joined(separator: " | ")
+            log("WATCH_TRANSITIONS 共 \(watchTransitions.count) 次：\(trace)")
+            // One hop reads as a restore; three read as an upstream module
+            // rewriting the register. The count is the diagnosis, so it goes in
+            // the headline rather than only in the log body.
             finish(String(format:
-                "写入 0x%02X 生效过，但在 T+%.2fs 被车辆改回（观察 %g 秒）。详见日志 WATCH 行。",
-                targetProfile, watchChangedAt, watchDuration))
+                "写入 0x%02X 生效过；观察 %g 秒内共 %d 次变化（首次 T+%.2fs）：%@",
+                targetProfile, watchDuration, watchTransitions.count,
+                watchChangedAt, trace))
         } else {
             finish(String(format: "写入 0x%02X 已确认并保持稳定 %g 秒。",
                           targetProfile, watchDuration))
