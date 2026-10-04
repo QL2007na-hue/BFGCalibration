@@ -102,6 +102,37 @@ public enum NinebotFrame {
                 UInt8(clamped & 0xFF), UInt8((clamped >> 8) & 0xFF)]
     }
 
+    // MARK: - Dashboard (DIS) read-only probe
+
+    /// A read of one 16-bit word from the dashboard module.
+    ///
+    /// Read-only by construction, and deliberately not gated by any switch: this
+    /// file produces no dashboard write frame at all. The one that exists lives in
+    /// `DisVoltageConfig.writePacket` and is gated by `DashboardWritePolicy`, which
+    /// this probe never touches.
+    public static func readDashboardWord(index: Int) -> [UInt8] {
+        [0x5A, 0xA5, 0x01, 0x3E, 0x01, 0x01, UInt8(index & 0xFF), 0x02]
+    }
+
+    /// What a dashboard probe reads, and why each one is on the list.
+    ///
+    /// The value that matters is 0x92 — the dashboard's own voltage selector, and
+    /// therefore the configuration it holds authority over. The rest are here to
+    /// answer a narrower question: whether this is a colour-display unit at all.
+    /// On the M85C that prompted this, `colorDisplay` reads 0.0.0 and the
+    /// dashboard allowlist demands 1.5.5, which is why dashboard writes were never
+    /// available on that vehicle.
+    public static let dashboardProbePlan: [(index: Int, label: String)] = [
+        (0x92, "电压配置"),
+        (0x1A, "仪表固件"),
+        (0xD1, "彩屏固件"),
+        (0xB5, "仪表 SOC"),
+        (0xB1, "VRLA 电压"),
+        (0x3D, "BFG 版本"),
+        (0x1E, "能量 Wh"),
+        (0x44, "剩余容量"),
+    ]
+
     /// The register `writeCapacityRated` targets. Exposed so callers can log and
     /// verify against the same constant instead of repeating the literal.
     public static let capacityWriteIndex = 0x0E

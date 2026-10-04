@@ -689,6 +689,14 @@ globalThis.lucide = {createIcons() {
           ${state.expertMode ? `<div class="nb-alert warning" style="margin-top:12px">${icon('triangle-alert')}<span>专家模式已开启。仅本次运行有效，重启应用后自动关闭。</span></div>` : ''}
         </section>
         <section class="nb-card nb-section">
+          <div class="nb-section-head"><h3 class="nb-section-title">仪表盘只读诊断</h3></div>
+          <p class="nb-label">读取仪表盘自己的寄存器。其中 <b>0x92</b> 是仪表的电压配置——<b>它才是那台车反复覆盖计量模块的原因</b>。日志里每个寄存器都会留下原始帧和解析结果。</p>
+          <p class="nb-label">这一步<b>只读</b>，不需要开启任何开关，也不会发送任何写入指令。</p>
+          ${state.disConfigRaw ? `<div class="nb-label" style="margin-top:12px">最近读到的 0x92</div><div class="nb-value">${esc(state.disConfigRaw)}${state.disConfigVoltage ? ' · ' + esc(state.disConfigVoltage) : ''}</div>` : ''}
+          <button class="nb-secondary" style="margin-top:12px" type="button" data-action="dashboard-probe">读取仪表盘寄存器</button>
+        </section>
+
+        <section class="nb-card nb-section">
           <div class="nb-section-head"><h3 class="nb-section-title">额定容量寄存器 0x0E</h3></div>
           <p class="nb-label">计量模块算电量用的额定容量就存在这里。实测发现：只写档位（0x00）会在约 6.5 秒后被车辆改回，因为它与这里的值不自洽——所以要让改动站住，得连这个寄存器一起写。</p>
           <p class="nb-label">写入前会先读原值做备份，读不到就一个字节都不发；写后保持连接观察 90 秒，并在日志里记录 0x0E / 0x0F / 档位三个寄存器的变化。</p>

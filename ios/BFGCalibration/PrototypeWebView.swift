@@ -304,6 +304,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "expert-mode":
             requestExpertModeToggle()
 
+        case "dashboard-probe":
+            requestDashboardProbe()
+
         case "sweep-enable":
             requestSweepEnable()
 
@@ -723,6 +726,37 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     }
 
     // MARK: - Rated-capacity register (0x0E)
+
+    // MARK: - Dashboard read-only probe
+
+    /// The only diagnostic in the app that needs no switch, because there is
+    /// nothing to gate: it reads and nothing else.
+    ///
+    /// It exists because of a gap the exports kept showing. 0x92 is the
+    /// dashboard's own voltage selector — the configuration it enforces on the
+    /// meter, which is why a meter write is reverted a few seconds later — and
+    /// although every connection already read it, the success path logged nothing.
+    /// So no export ever contained the one value that explains the reverts.
+    private func requestDashboardProbe() {
+        let list = NinebotFrame.dashboardProbePlan
+            .map { String(format: "0x%02X %@", $0.index, $0.label) }
+            .joined(separator: "\n")
+        let text = "将只读以下仪表盘寄存器，不发送任何写入：\n\n" + list
+            + "\n\n每个寄存器的原始帧和解析结果都会写进日志（DISPROBE_ 行）。"
+            + "其中 0x92 是仪表自己的电压配置——它才是那台车会反复覆盖计量模块的原因。"
+        let alert = UIAlertController(
+            title: "仪表盘只读诊断",
+            message: text,
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: "开始读取", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.goTo("write-progress")
+            self.startClient(record: self.placeholderRecord(serial: self.serial),
+                             operation: .dashboardProbe)
+        })
+        presentAlert(alert)
+    }
 
     // MARK: - Capacity sweep
 
@@ -1742,6 +1776,11 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         // the second is kept so the export shows what the register actually
         // ended up as, not merely what was asked for.
         state["capacityWriteEnabled"] = WriteAccessPolicy.allowsCapacityWrite
+        if result.disConfigRaw >= 0 {
+            state["disConfigRaw"] = String(format: "0x%04X", result.disConfigRaw)
+            let v = DisVoltageConfig.nominalVoltage(result.disConfigRaw)
+            state["disConfigVoltage"] = v > 0 ? "\(v)V" : "未识别"
+        }
         if result.capacityRatedBefore > 0 {
             backupStore.saveRatedCapacityBackupIfAbsent(serial: result.serial,
                                                         raw: result.capacityRatedBefore)
@@ -2094,7 +2133,8 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
             state["screen"] = "pair-ready"
             state["modal"] = "operation-failed"
         case .readOnly, .compareRead, .discoverVehicles, .writeProfile, .writeDisVoltage,
-             .writeCapacity, .probeRegisterWrites, .sweepCapacityValues:
+             .writeCapacity, .probeRegisterWrites, .sweepCapacityValues,
+             .dashboardProbe:
             state["screen"] = "home"
             state["modal"] = "operation-failed"
         }

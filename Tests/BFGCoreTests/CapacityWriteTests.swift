@@ -232,4 +232,60 @@ final class CapacityWriteTests: XCTestCase {
         XCTAssertNil(NinebotFrame.writeBfgWord(register: 0x00, value: 26000),
                      "the sweep path must not be able to reach the profile byte")
     }
+
+    // MARK: - Dashboard read-only probe
+
+    /// The probe must be incapable of writing. If a future edit ever makes it
+    /// emit CMD 0x02, this fails — which is the whole reason it exists as a test
+    /// rather than a comment.
+    func testDashboardProbeOnlyEverReads() {
+        for entry in NinebotFrame.dashboardProbePlan {
+            let frame = NinebotFrame.readDashboardWord(index: entry.index)
+            XCTAssertEqual(frame.count, 8)
+            XCTAssertEqual(frame[4], 0x01, "must target the dashboard module")
+            XCTAssertEqual(frame[5], 0x01, "CMD must be read, never write")
+            XCTAssertNotEqual(frame[5], 0x02)
+            XCTAssertEqual(frame[6], UInt8(entry.index))
+        }
+    }
+
+    func testDashboardReadFrameIsExact() {
+        XCTAssertEqual(NinebotFrame.readDashboardWord(index: 0x92),
+                       [0x5A, 0xA5, 0x01, 0x3E, 0x01, 0x01, 0x92, 0x02])
+    }
+
+    /// 0x92 is the register that matters — the dashboard voltage selector, and the
+    /// configuration it enforces on the meter. It must stay on the list.
+    func testProbePlanLeadsWithTheSelector() {
+        XCTAssertEqual(NinebotFrame.dashboardProbePlan.first?.index, 0x92)
+        XCTAssertTrue(NinebotFrame.dashboardProbePlan.contains { $0.index == 0xD1 },
+                      "the colour-display version is what distinguishes the generations")
+    }
+
+    func testProbePlanHasNoDuplicatesAndFitsOneByte() {
+        let ids = NinebotFrame.dashboardProbePlan.map { $0.index }
+        XCTAssertEqual(ids.count, Set(ids).count)
+        XCTAssertTrue(ids.allSatisfy { $0 >= 0 && $0 <= 0xFF })
+        XCTAssertTrue(NinebotFrame.dashboardProbePlan.allSatisfy { !$0.label.isEmpty })
+    }
+
+    /// The generation marker this whole probe was built to read.
+    func testColourDisplayZeroMeansFirstGeneration() {
+        // 0.0.0 is what the M85C reports, and the allowlist demands 1.5.5.
+        XCTAssertNotEqual(0x0000, DashboardWritePolicy.colorDisplay)
+        XCTAssertNotEqual(0x0432, DashboardWritePolicy.dashboard)
+    }
+
+    func testDisVoltageSelectorDecoding() {
+        XCTAssertEqual(DisVoltageConfig.nominalVoltage(0xC1), 72)
+        XCTAssertEqual(DisVoltageConfig.nominalVoltage(0xC2), 60)
+        XCTAssertEqual(DisVoltageConfig.nominalVoltage(0xC3), 48)
+        XCTAssertEqual(DisVoltageConfig.nominalVoltage(0x51), 72)
+        XCTAssertEqual(DisVoltageConfig.nominalVoltage(0x53), 48)
+        XCTAssertEqual(DisVoltageConfig.nominalVoltage(0x00), -1, "unrecognised, not 72")
+        XCTAssertTrue(DisVoltageConfig.isObserved(0xC1))
+        XCTAssertTrue(DisVoltageConfig.isObserved(0x53))
+        XCTAssertFalse(DisVoltageConfig.isObserved(0x00))
+        XCTAssertFalse(DisVoltageConfig.isObserved(0x0432))
+    }
 }

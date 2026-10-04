@@ -47,6 +47,13 @@ public final class BfgBleClient: NSObject {
         /// revert is verified before the next candidate starts. If a revert cannot
         /// be confirmed the run stops rather than continuing to drift.
         case sweepCapacityValues
+        /// Reads the dashboard's own registers and logs every raw frame.
+        ///
+        /// No switch gates it because there is nothing to gate: this operation
+        /// contains no write. It exists because 0x92 — the dashboard's voltage
+        /// selector, and the configuration it enforces on the meter — was being
+        /// read on every connection and never recorded anywhere.
+        case dashboardProbe
     }
 
     public protocol Listener: AnyObject {
@@ -184,6 +191,7 @@ public final class BfgBleClient: NSObject {
         case waitCapacityPreRead, waitCapacityWriteAck, waitAfterCapacityWrite, watchCapacity
         case probePreRead, probeWrite, probeVerify
         case sweepPreRead, sweepTryWrite, sweepVerify, sweepRestore, sweepRestoreVerify
+        case dashboardProbe
         case done
     }
 
@@ -331,6 +339,11 @@ public final class BfgBleClient: NSObject {
     private var sweepAckSeen = false
     private var sweepAccepted: [Int] = []
     private var sweepRefused: [Int] = []
+
+    // MARK: - Dashboard read-only probe
+    private var dashboardProbeCursor = 0
+    private var dashboardProbeReads = 0
+    private var dashboardProbeTimeouts = 0
 
     private func capacityWatchElapsed() -> Double {
         Double(DispatchTime.now().uptimeNanoseconds &- capacityWatchStart.uptimeNanoseconds)
@@ -555,6 +568,15 @@ public final class BfgBleClient: NSObject {
                 afterDisConfigRead()
             }
 
+        case .dashboardProbe:
+            // A silent dashboard register is recorded and skipped: the gap is
+            // part of what the probe is reporting.
+            let missing = NinebotFrame.dashboardProbePlan[dashboardProbeCursor]
+            log(String(format: "DISPROBE index=0x%02X 无回复（%@）", missing.index, missing.label))
+            dashboardProbeCursor += 1
+            dashboardProbeTimeouts += 1
+            advanceDashboardProbe()
+
         case .sweepPreRead:
             // Without a baseline there is nothing to revert to, so this one stops
             // before any write rather than carrying on.
@@ -706,7 +728,8 @@ public final class BfgBleClient: NSObject {
                  .watchAfterWrite,
                  .waitCapacityPreRead, .waitCapacityWriteAck, .waitAfterCapacityWrite, .watchCapacity,
                  .probePreRead, .probeWrite, .probeVerify,
-                 .sweepPreRead, .sweepTryWrite, .sweepVerify, .sweepRestore, .sweepRestoreVerify:
+                 .sweepPreRead, .sweepTryWrite, .sweepVerify, .sweepRestore, .sweepRestoreVerify,
+                 .dashboardProbe:
                 try handleSessionReply(encrypted)
             default:
                 break
@@ -968,6 +991,13 @@ public final class BfgBleClient: NSObject {
             guard index == 0x92, plain.count >= 9 else { return }
             result.disConfigRaw = NinebotFrame.readLe16(plain, offset: 7)
             clearTimeout()
+            // Logged on the success path too. This register — the dashboard's own
+            // voltage selector — was being read on every single connection and
+            // never recorded, which is why no export ever contained it.
+            log(String(format: "DIS_CONFIG 0x92=0x%04X raw=%@ nominal=%@",
+                       result.disConfigRaw, Hex.encode(plain),
+                       DisVoltageConfig.nominalVoltage(result.disConfigRaw) > 0
+                        ? "\(DisVoltageConfig.nominalVoltage(result.disConfigRaw))V" : "未识别"))
             afterDisConfigRead()
 
         case .waitCapacityCompatScan:
@@ -1031,6 +1061,12 @@ public final class BfgBleClient: NSObject {
             result.resolvedAfterCapacityRaw = result.afterCapacityRaw
             clearTimeout()
             beginProfileWatch()
+
+        case .dashboardProbe:
+            let dashIdx = try requireReadAck(plain, src: 0x01, len: 9)
+            guard dashIdx == NinebotFrame.dashboardProbePlan[dashboardProbeCursor].index else { return }
+            clearTimeout()
+            _ = recordDashboardProbe(plain: plain)
 
         case .sweepPreRead:
             let sweepIdx = try requireReadAck(plain, src: 0x10, len: 9)
@@ -1525,6 +1561,9 @@ public final class BfgBleClient: NSObject {
         switch operation {
         case .writeDisVoltage:
             beginDisVoltageWrite()
+        case .dashboardProbe:
+            beginDashboardProbe()
+
         case .sweepCapacityValues:
             guard WriteAccessPolicy.allowsCapacitySweep else {
                 fail("容量值试探未开启；本次没有发送任何写入指令。")
@@ -2064,6 +2103,68 @@ public final class BfgBleClient: NSObject {
         } else {
             finish("试探完成：接受 \(ok)；拒绝 \(no.isEmpty ? "无" : no)。0x0E 已恢复为 \(sweepOriginal)。")
         }
+    }
+
+    // MARK: - Dashboard probe implementation
+
+    private func beginDashboardProbe() {
+        dashboardProbeCursor = 0
+        dashboardProbeReads = 0
+        dashboardProbeTimeouts = 0
+        let n = NinebotFrame.dashboardProbePlan.count
+        log("DISPROBE_BEGIN 只读诊断仪表盘（模块 0x01），\(n) 个寄存器，全部为读操作，不发送任何写入")
+        status("正在只读诊断仪表盘（\(n) 个寄存器）…")
+        advanceDashboardProbe()
+    }
+
+    private func advanceDashboardProbe() {
+        guard dashboardProbeCursor < NinebotFrame.dashboardProbePlan.count else {
+            log("DISPROBE_END 采集 \(dashboardProbeReads) 个，超时 \(dashboardProbeTimeouts) 个")
+            finish("仪表盘只读诊断完成：\(dashboardProbeReads) 个寄存器已记录，"
+                + "\(dashboardProbeTimeouts) 个未回复。详见 DISPROBE_ 日志。")
+            return
+        }
+        let entry = NinebotFrame.dashboardProbePlan[dashboardProbeCursor]
+        state = .dashboardProbe
+        send(NinebotFrame.readDashboardWord(index: entry.index))
+        timeout(.dashboardProbe, 3.5, String(format: "仪表 0x%02X 无回复", entry.index))
+    }
+
+    /// Records the value AND the raw frame. The raw bytes are the point: if a
+    /// parsing assumption is wrong later, the evidence to re-derive it is here.
+    private func recordDashboardProbe(plain: [UInt8]) -> Bool {
+        guard dashboardProbeCursor < NinebotFrame.dashboardProbePlan.count else { return false }
+        let entry = NinebotFrame.dashboardProbePlan[dashboardProbeCursor]
+        guard plain.count >= 9 else { return false }
+        let value = NinebotFrame.readLe16(plain, offset: 7)
+        dashboardProbeCursor += 1
+        dashboardProbeReads += 1
+        var note = ""
+        switch entry.index {
+        case 0x92:
+            let v = DisVoltageConfig.nominalVoltage(value)
+            let family = String(format: "0x%02X", value >> 4)
+            note = String(format: " → %@ / 高半字节 0x%X / 已知编码=%@",
+                          v > 0 ? "\(v)V" : "未识别", value >> 4,
+                          DisVoltageConfig.isObserved(value) ? "是" : "否")
+            _ = family
+        case 0x1A:
+            note = String(format: " → 仪表固件 %d.%d.%d",
+                          (value >> 8) & 0xF, (value >> 4) & 0xF, value & 0xF)
+        case 0xD1:
+            note = value == 0 ? " → 彩屏固件 0.0.0（无彩屏 = 一代）"
+                              : String(format: " → 彩屏固件 %d.%d.%d",
+                                       (value >> 8) & 0xF, (value >> 4) & 0xF, value & 0xF)
+        case 0x3D:
+            note = String(format: " → BFG 版本 %d.%d.%d",
+                          (value >> 8) & 0xF, (value >> 4) & 0xF, value & 0xF)
+        default:
+            break
+        }
+        log(String(format: "DISPROBE index=0x%02X value=0x%04X raw=%@%@",
+                   entry.index, value, Hex.encode(plain), note))
+        advanceDashboardProbe()
+        return true
     }
 
     private func endProfileWatch() {
