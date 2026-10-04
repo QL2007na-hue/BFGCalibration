@@ -207,6 +207,9 @@ public final class BfgBleClient: NSObject {
     private let targetProfile: Int
     /// Target for `.writeCapacity`. Zero means "not a capacity write".
     private let targetCapacity: Int
+    /// What the sweep should look for. Supplied by the caller because the backup
+    /// store lives in the app layer, not here — the core only compares numbers.
+    private let referenceCapacity: Int
     private let record: DeviceRecord
     private let result = Result()
 
@@ -393,6 +396,7 @@ public final class BfgBleClient: NSObject {
 
     public init(record: DeviceRecord, operation: Operation, targetProfile: Int = -1,
              targetCapacity: Int = 0,
+             referenceCapacity: Int = 0,
          expectedDisConfigRaw: Int = -1, allowUnverifiedDis: Bool = false,
          dumpModules: [Int] = [],
          transport: BleTransport, credentialStore: CredentialStore,
@@ -401,6 +405,7 @@ public final class BfgBleClient: NSObject {
         self.operation = operation
         self.targetProfile = targetProfile
         self.targetCapacity = targetCapacity
+        self.referenceCapacity = referenceCapacity
         self.expectedDisConfigRaw = expectedDisConfigRaw
         self.allowUnverifiedDis = allowUnverifiedDis
         self.dumpModules = dumpModules
@@ -2149,10 +2154,7 @@ public final class BfgBleClient: NSObject {
         // The meter holds 26000 in 0x0E, and the dashboard's own arithmetic works
         // back to about that. If the dashboard keeps its own copy, one of its
         // registers will carry this exact number.
-        dashScanReference = backupStore.prewriteRatedCapacity(serial: record.effectiveSn)
-        if dashScanReference <= 0 {
-            dashScanReference = backupStore.ratedCapacityBackup(serial: record.effectiveSn)
-        }
+        dashScanReference = referenceCapacity
         log("DISCAN_BEGIN 只读扫描仪表盘（模块 0x01）0x00–0xFF，一遍，不发送任何写入；"
             + "参照容量=\(dashScanReference > 0 ? String(dashScanReference) : "未知")")
         status("正在只读扫描仪表盘 0x00–0xFF（约 1–2 分钟）…")

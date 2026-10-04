@@ -755,8 +755,13 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
             self.state["scanReplies"] = 0
             self.state["scanTimeouts"] = 0
             self.pushState()
+            // The core compares numbers; it does not read the backup store.
+            let reference = self.backupStore.prewriteRatedCapacity(serial: self.serial) > 0
+                ? self.backupStore.prewriteRatedCapacity(serial: self.serial)
+                : self.backupStore.ratedCapacityBackup(serial: self.serial)
             self.startClient(record: self.placeholderRecord(serial: self.serial),
-                             operation: .dashboardScan)
+                             operation: .dashboardScan,
+                             referenceCapacity: reference)
         })
         presentAlert(alert)
     }
@@ -1269,6 +1274,7 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     private func startClient(record: DeviceRecord, operation: BfgBleClient.Operation,
                              targetProfile: Int = -1,
                              targetCapacity: Int = 0,
+                             referenceCapacity: Int = 0,
                              expectedDisConfigRaw: Int = -1,
                              allowUnverifiedDis: Bool = false,
                              dumpModules: [Int] = []) {
@@ -1277,6 +1283,7 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         let newClient = BfgBleClient(record: record, operation: operation,
                                      targetProfile: targetProfile,
                                      targetCapacity: targetCapacity,
+                                     referenceCapacity: referenceCapacity,
                                      expectedDisConfigRaw: expectedDisConfigRaw,
                                      allowUnverifiedDis: allowUnverifiedDis,
                                      dumpModules: dumpModules,
