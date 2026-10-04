@@ -1956,7 +1956,8 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         case .pairAndRead:
             state["screen"] = "pair-ready"
             state["modal"] = "operation-failed"
-        case .readOnly, .compareRead, .discoverVehicles, .writeProfile, .writeDisVoltage:
+        case .readOnly, .compareRead, .discoverVehicles, .writeProfile, .writeDisVoltage,
+             .writeCapacity:
             state["screen"] = "home"
             state["modal"] = "operation-failed"
         }
