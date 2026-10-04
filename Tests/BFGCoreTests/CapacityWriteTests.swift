@@ -33,7 +33,7 @@ final class CapacityWriteTests: XCTestCase {
 
     func testFrameForTheVehiclesCurrentValue() {
         XCTAssertEqual(NinebotFrame.writeCapacityRated(26000),
-                       [0x5A, 0xA5, 0x02, 0x3E, 0x10, 0x02, 0x0E, 0x88, 0x65])
+                       [0x5A, 0xA5, 0x02, 0x3E, 0x10, 0x02, 0x0E, 0x90, 0x65])
     }
 
     /// The address is a literal, never a parameter. This test fails the moment

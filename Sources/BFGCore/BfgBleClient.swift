@@ -244,7 +244,7 @@ public final class BfgBleClient: NSObject {
     // question is not only "did 0x0E stick" but "did the profile follow it, and
     // did the mirror at 0x0F agree" — that triple is what distinguishes a
     // self-consistent vehicle from one whose registers have drifted apart.
-    private var capacityVerifyAttempts = 0
+    private var capacityRegVerifyAttempts = 0
     private var capacityWatchTick = 0
     private var capacityWatchStart = DispatchTime.now()
     private var capacityWatchTimer: DispatchWorkItem?
@@ -488,7 +488,7 @@ public final class BfgBleClient: NSObject {
             fail("写入前未能读到 0x0E 原值，没有可回滚的备份；本次没有发送写入指令。")
 
         case .waitAfterCapacityWrite:
-            if capacityVerifyAttempts < NinebotFrame.maxCapacityVerifyAttempts {
+            if capacityRegVerifyAttempts < NinebotFrame.maxCapacityVerifyAttempts {
                 result.verificationRetried = true
                 requestCapacityWriteVerify()
             } else {
@@ -950,12 +950,12 @@ public final class BfgBleClient: NSObject {
             if value == targetCapacity {
                 result.capacityReadbackVerified = true
                 beginCapacityWatch()
-            } else if capacityVerifyAttempts < NinebotFrame.maxCapacityVerifyAttempts {
+            } else if capacityRegVerifyAttempts < NinebotFrame.maxCapacityVerifyAttempts {
                 result.verificationRetried = true
                 scheduleVerify(after: 1.0) { [weak self] in self?.requestCapacityWriteVerify() }
             } else {
                 fail(String(format: "连续%d次回读 0x%02X 仍为 %d，目标 %d",
-                            capacityVerifyAttempts, NinebotFrame.capacityWriteIndex,
+                            capacityRegVerifyAttempts, NinebotFrame.capacityWriteIndex,
                             value, targetCapacity))
             }
 
@@ -1540,7 +1540,7 @@ public final class BfgBleClient: NSObject {
     /// what it replaced must not happen at all.
     private func beginCapacityWrite() {
         state = .waitCapacityPreRead
-        capacityVerifyAttempts = 0
+        capacityRegVerifyAttempts = 0
         capacityBefore = -1
         status("正在读取 0x0E 原值（写入前备份）…")
         send(NinebotFrame.readBfgWord(register: NinebotFrame.capacityWriteIndex))
@@ -1572,10 +1572,10 @@ public final class BfgBleClient: NSObject {
     }
 
     private func requestCapacityWriteVerify() {
-        capacityVerifyAttempts += 1
-        if capacityVerifyAttempts > 1 { result.verificationRetried = true }
+        capacityRegVerifyAttempts += 1
+        if capacityRegVerifyAttempts > 1 { result.verificationRetried = true }
         status(String(format: "正在回读 0x%02X（%d/%d）…",
-                      NinebotFrame.capacityWriteIndex, capacityVerifyAttempts,
+                      NinebotFrame.capacityWriteIndex, capacityRegVerifyAttempts,
                       NinebotFrame.maxCapacityVerifyAttempts))
         send(NinebotFrame.readBfgWord(register: NinebotFrame.capacityWriteIndex))
         timeout(.waitAfterCapacityWrite, 4.5, "容量写入后回读无回复")
@@ -1724,6 +1724,18 @@ public final class BfgBleClient: NSObject {
                 finish("Profile 已回读确认；随后连接中断。")
             } else {
                 fail("写入指令已发送，但连接中断，结果尚未确认；请重新连接读取当前配置。")
+            }
+            return true
+        case .writeCapacity:
+            // Without this the capacity path fell through to `default: false` and
+            // a post-write disconnect was reported as an ordinary failure — the
+            // one outcome that must never be silent, because the command may well
+            // have landed on the register the state-of-charge is computed from.
+            if result.capacityReadbackVerified {
+                finish("容量寄存器已回读确认；随后连接中断。断电保持仍需验证。")
+            } else {
+                fail("容量写入指令已发送，但连接中断，结果尚未确认；"
+                    + "请重新连接读取 0x0E 当前值。")
             }
             return true
         default:
