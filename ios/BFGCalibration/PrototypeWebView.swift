@@ -304,6 +304,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "expert-mode":
             requestExpertModeToggle()
 
+        case "dashboard-scan":
+            requestDashboardScan()
+
         case "dashboard-probe":
             requestDashboardProbe()
 
@@ -726,6 +729,37 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
     }
 
     // MARK: - Rated-capacity register (0x0E)
+
+    /// Sweeps the dashboard end to end. Read-only, so no switch.
+    ///
+    /// The eight named registers answer what the dashboard *reports*. This answers
+    /// where it *keeps* things — and specifically whether it holds a rated capacity
+    /// of its own. If it does, that register is the real upstream switch, and the
+    /// one a capacity write would eventually have to reach; the meter is only a
+    /// copy that gets overwritten.
+    private func requestDashboardScan() {
+        let text = "将只读扫描仪表盘模块 0x01 的全部 256 个寄存器（0x00–0xFF），一遍。\n\n"
+            + "不发送任何写入指令，不需要开启任何开关。\n\n"
+            + "扫描约需 1–2 分钟，请保持车辆开机、手机贴近。\n\n"
+            + "日志会逐条记录每个有响应的地址，并在结束时汇总："
+            + "哪些地址的值正好等于计量模块的额定容量——那就是仪表自己存着这份配置的位置。"
+        let alert = UIAlertController(
+            title: "扫描仪表盘全部寄存器（只读）",
+            message: text,
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: "开始扫描", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.goTo("scan-progress")
+            self.state["scanModule"] = "仪表盘 0x01 全片"
+            self.state["scanReplies"] = 0
+            self.state["scanTimeouts"] = 0
+            self.pushState()
+            self.startClient(record: self.placeholderRecord(serial: self.serial),
+                             operation: .dashboardScan)
+        })
+        presentAlert(alert)
+    }
 
     // MARK: - Dashboard read-only probe
 
@@ -2134,7 +2168,7 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
             state["modal"] = "operation-failed"
         case .readOnly, .compareRead, .discoverVehicles, .writeProfile, .writeDisVoltage,
              .writeCapacity, .probeRegisterWrites, .sweepCapacityValues,
-             .dashboardProbe:
+             .dashboardProbe, .dashboardScan:
             state["screen"] = "home"
             state["modal"] = "operation-failed"
         }

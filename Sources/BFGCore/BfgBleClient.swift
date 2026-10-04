@@ -54,6 +54,13 @@ public final class BfgBleClient: NSObject {
         /// selector, and the configuration it enforces on the meter — was being
         /// read on every connection and never recorded anywhere.
         case dashboardProbe
+        /// Sweeps the dashboard's whole register space once, read-only, looking for
+        /// where it keeps the capacity it enforces on the meter.
+        ///
+        /// The dashboard only exposes eight registers through the named readers. If
+        /// it stores a rated capacity of its own — rather than reading it back from
+        /// the meter each time — it is in one of the other 248.
+        case dashboardScan
     }
 
     public protocol Listener: AnyObject {
@@ -191,7 +198,7 @@ public final class BfgBleClient: NSObject {
         case waitCapacityPreRead, waitCapacityWriteAck, waitAfterCapacityWrite, watchCapacity
         case probePreRead, probeWrite, probeVerify
         case sweepPreRead, sweepTryWrite, sweepVerify, sweepRestore, sweepRestoreVerify
-        case dashboardProbe
+        case dashboardProbe, waitDashboardScan
         case done
     }
 
@@ -344,6 +351,13 @@ public final class BfgBleClient: NSObject {
     private var dashboardProbeCursor = 0
     private var dashboardProbeReads = 0
     private var dashboardProbeTimeouts = 0
+
+    // MARK: - Dashboard full sweep (read-only)
+    private var dashScanIndex = 0
+    private var dashScanReplies = 0
+    private var dashScanTimeouts = 0
+    private var dashScanValues: [Int: Int] = [:]
+    private var dashScanReference = -1
 
     private func capacityWatchElapsed() -> Double {
         Double(DispatchTime.now().uptimeNanoseconds &- capacityWatchStart.uptimeNanoseconds)
@@ -568,6 +582,11 @@ public final class BfgBleClient: NSObject {
                 afterDisConfigRead()
             }
 
+        case .waitDashboardScan:
+            // A silent address is normal across 256 of them.
+            dashScanTimeouts += 1
+            advanceDashboardScan()
+
         case .dashboardProbe:
             // A silent dashboard register is recorded and skipped: the gap is
             // part of what the probe is reporting.
@@ -729,7 +748,7 @@ public final class BfgBleClient: NSObject {
                  .waitCapacityPreRead, .waitCapacityWriteAck, .waitAfterCapacityWrite, .watchCapacity,
                  .probePreRead, .probeWrite, .probeVerify,
                  .sweepPreRead, .sweepTryWrite, .sweepVerify, .sweepRestore, .sweepRestoreVerify,
-                 .dashboardProbe:
+                 .dashboardProbe, .waitDashboardScan:
                 try handleSessionReply(encrypted)
             default:
                 break
@@ -1061,6 +1080,18 @@ public final class BfgBleClient: NSObject {
             result.resolvedAfterCapacityRaw = result.afterCapacityRaw
             clearTimeout()
             beginProfileWatch()
+
+        case .waitDashboardScan:
+            guard NinebotFrame.isFrame(plain, src: 0x01, dst: 0x3E, cmd: 0x04) else { return }
+            clearTimeout()
+            let scanIdx = Int(plain[6])
+            let scanValue = plain.count >= 9 ? NinebotFrame.readLe16(plain, offset: 7) : -1
+            dashScanReplies += 1
+            if scanValue >= 0 {
+                dashScanValues[scanIdx] = scanValue
+                log(String(format: "DISCAN 0x%02X=%d raw=%@", scanIdx, scanValue, Hex.encode(plain)))
+            }
+            advanceDashboardScan()
 
         case .dashboardProbe:
             let dashIdx = try requireReadAck(plain, src: 0x01, len: 9)
@@ -1561,6 +1592,9 @@ public final class BfgBleClient: NSObject {
         switch operation {
         case .writeDisVoltage:
             beginDisVoltageWrite()
+        case .dashboardScan:
+            beginDashboardScan()
+
         case .dashboardProbe:
             beginDashboardProbe()
 
@@ -2102,6 +2136,81 @@ public final class BfgBleClient: NSObject {
             finish("试探完成：固件表内的候选值全部被拒绝。详见 SWEEP_ 日志。")
         } else {
             finish("试探完成：接受 \(ok)；拒绝 \(no.isEmpty ? "无" : no)。0x0E 已恢复为 \(sweepOriginal)。")
+        }
+    }
+
+    // MARK: - Dashboard full sweep implementation
+
+    private func beginDashboardScan() {
+        dashScanIndex = RegisterReadPlan.first
+        dashScanReplies = 0
+        dashScanTimeouts = 0
+        dashScanValues = [:]
+        // The meter holds 26000 in 0x0E, and the dashboard's own arithmetic works
+        // back to about that. If the dashboard keeps its own copy, one of its
+        // registers will carry this exact number.
+        dashScanReference = backupStore.prewriteRatedCapacity(serial: record.effectiveSn)
+        if dashScanReference <= 0 {
+            dashScanReference = backupStore.ratedCapacityBackup(serial: record.effectiveSn)
+        }
+        log("DISCAN_BEGIN 只读扫描仪表盘（模块 0x01）0x00–0xFF，一遍，不发送任何写入；"
+            + "参照容量=\(dashScanReference > 0 ? String(dashScanReference) : "未知")")
+        status("正在只读扫描仪表盘 0x00–0xFF（约 1–2 分钟）…")
+        requestDashboardScanRead()
+    }
+
+    private func requestDashboardScanRead() {
+        if dashScanIndex % 32 == 0 {
+            status("正在扫描仪表盘 \(dashScanIndex)/256…")
+        }
+        send(RegisterReadPlan.probeRequest(module: RegisterReadPlan.dashboard,
+                                           index: dashScanIndex))
+        timeout(.waitDashboardScan, 0.65, "仪表寄存器读取无回复")
+    }
+
+    private func advanceDashboardScan() {
+        dashScanIndex += 1
+        guard dashScanIndex <= RegisterReadPlan.last else {
+            endDashboardScan()
+            return
+        }
+        scheduleVerify(after: 0.05) { [weak self] in
+            guard let self, !self.finished, self.state == .waitDashboardScan else { return }
+            self.requestDashboardScanRead()
+        }
+    }
+
+    /// The whole point of the sweep is this summary: every register whose value
+    /// equals the capacity the meter holds. One of them is where the dashboard
+    /// keeps the configuration it enforces — and therefore the register any
+    /// future write would have to reach.
+    private func endDashboardScan() {
+        let answered = RegisterReadPlan.last - RegisterReadPlan.first + 1 - dashScanTimeouts
+        log(String(format: "DISCAN_END 扫描 256 个地址：有响应 %d，未回复 %d",
+                   dashScanReplies, dashScanTimeouts))
+        if dashScanReference > 0 {
+            let matches = dashScanValues.filter { $0.value == dashScanReference }
+                .keys.sorted().map { String(format: "0x%02X", $0) }.joined(separator: " ")
+            log("DISCAN_CAPACITY_MATCH 值等于 \(dashScanReference) 的地址："
+                + "\(matches.isEmpty ? "无" : matches)")
+        }
+        // Also surface round numbers in the plausible-capacity band: a rated
+        // capacity may be stored scaled (Wh, or 0.1 Ah) rather than in mAh.
+        let plausible = dashScanValues
+            .filter { CapacityCompatibilityResolver.isPlausible($0.value) }
+            .sorted { $0.key < $1.key }
+            .prefix(24)
+            .map { String(format: "0x%02X=%d", $0.key, $0.value) }
+            .joined(separator: " ")
+        log("DISCAN_PLAUSIBLE 落在合理容量区间的地址：\(plausible.isEmpty ? "无" : plausible)")
+        _ = answered
+        if dashScanReference > 0,
+           dashScanValues.contains(where: { $0.value == dashScanReference }) {
+            finish("仪表盘扫描完成：\(dashScanReplies) 个有响应；"
+                + "找到了值等于 \(dashScanReference) 的地址，详见 DISCAN_CAPACITY_MATCH。")
+        } else {
+            finish("仪表盘扫描完成：\(dashScanReplies) 个有响应，\(dashScanTimeouts) 个未回复。"
+                + "未找到等于参照容量的地址，详见 DISCAN_ 日志。")
         }
     }
 

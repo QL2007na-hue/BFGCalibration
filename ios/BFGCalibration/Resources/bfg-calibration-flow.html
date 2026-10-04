@@ -694,6 +694,7 @@ globalThis.lucide = {createIcons() {
           <p class="nb-label">这一步<b>只读</b>，不需要开启任何开关，也不会发送任何写入指令。</p>
           ${state.disConfigRaw ? `<div class="nb-label" style="margin-top:12px">最近读到的 0x92</div><div class="nb-value">${esc(state.disConfigRaw)}${state.disConfigVoltage ? ' · ' + esc(state.disConfigVoltage) : ''}</div>` : ''}
           <button class="nb-secondary" style="margin-top:12px" type="button" data-action="dashboard-probe">读取仪表盘寄存器</button>
+          <button class="nb-secondary" style="margin-top:10px" type="button" data-action="dashboard-scan">扫描仪表盘全部寄存器（只读）</button>
         </section>
 
         <section class="nb-card nb-section">

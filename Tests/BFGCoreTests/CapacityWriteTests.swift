@@ -288,4 +288,36 @@ final class CapacityWriteTests: XCTestCase {
         XCTAssertFalse(DisVoltageConfig.isObserved(0x00))
         XCTAssertFalse(DisVoltageConfig.isObserved(0x0432))
     }
+
+    // MARK: - Dashboard full sweep (read-only)
+
+    func testDashboardSweepCoversTheWholeSpaceOnce() {
+        XCTAssertEqual(RegisterReadPlan.dashboard, 0x01)
+        XCTAssertEqual(RegisterReadPlan.first, 0x00)
+        XCTAssertEqual(RegisterReadPlan.last, 0xFF)
+        // 0x00...0xFF inclusive is 256 addresses, which is what the log reports.
+        XCTAssertEqual(RegisterReadPlan.last - RegisterReadPlan.first + 1, 256)
+    }
+
+    func testDashboardSweepFramesAreReads() {
+        for index in [0x00, 0x1E, 0x3D, 0x44, 0x92, 0xB1, 0xB5, 0xD1, 0xFF] {
+            let f = RegisterReadPlan.probeRequest(module: RegisterReadPlan.dashboard, index: index)
+            XCTAssertEqual(f[4], 0x01, "must target the dashboard")
+            XCTAssertEqual(f[5], 0x01, "CMD must be read")
+            XCTAssertNotEqual(f[5], 0x02)
+            XCTAssertEqual(f[6], UInt8(index))
+        }
+    }
+
+    /// The sweep exists to find where the dashboard keeps a capacity of its own,
+    /// so it must compare against a plausible capacity band rather than an exact
+    /// number only — a scaled encoding (Wh, 0.1 Ah) would otherwise be invisible.
+    func testPlausibleBandCoversScaledEncodings() {
+        // 26000 mAh direct
+        XCTAssertTrue(CapacityCompatibilityResolver.isPlausible(26000))
+        // 1864 Wh (26 Ah * 72 V, rounded) is outside the mAh band on purpose:
+        // the resolver is about mAh. The sweep logs the band separately so a
+        // scaled value is still visible in the raw lines.
+        XCTAssertFalse(CapacityCompatibilityResolver.isPlausible(1864))
+    }
 }
