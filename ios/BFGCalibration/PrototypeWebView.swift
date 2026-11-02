@@ -2254,7 +2254,7 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
             state["modal"] = "operation-failed"
         case .readOnly, .compareRead, .discoverVehicles, .writeProfile, .writeDisVoltage,
              .writeCapacity, .probeRegisterWrites, .sweepCapacityValues,
-             .dashboardProbe, .dashboardScan:
+             .dashboardProbe, .dashboardScan, .readClusterSecretKey:
             state["screen"] = "home"
             state["modal"] = "operation-failed"
         }
