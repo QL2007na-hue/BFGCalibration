@@ -310,6 +310,9 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
         case "dashboard-probe":
             requestDashboardProbe()
 
+        case "read-secret-key":
+            requestClusterSecretKey()
+
         case "sweep-enable":
             requestSweepEnable()
 
@@ -795,6 +798,67 @@ final class PrototypeCoordinator: NSObject, WKScriptMessageHandler, WKNavigation
                              operation: .dashboardProbe)
         })
         presentAlert(alert)
+    }
+
+    // MARK: - Cluster machine key
+
+    /// Reads the cluster's 40-byte machine-key material and shows it in a dialog.
+    ///
+    /// Read-only: the frame is `index 0x13` with a length byte of `0x28`. The
+    /// length is the whole point — the receiver refuses any other value — and the
+    /// reply is an ordinary `CMD 0x04` acknowledgement.
+    ///
+    /// It runs through the same authenticated session as every other read rather
+    /// than a second raw central, because a vehicle that requires the encrypted
+    /// handshake simply ignores a plaintext write; a silent ignore would be
+    /// indistinguishable from a register that does not exist, which is the one
+    /// answer this button must not give.
+    private func requestClusterSecretKey() {
+        // A write in flight owns the connection; starting a read would cancel it
+        // mid-sequence, and a cancelled write is not a reversible state.
+        guard pendingWrite == nil, gate == nil,
+              activeOperation != .writeProfile,
+              activeOperation != .writeDisVoltage else {
+            state["errorMessage"] = "写入流程进行中。请先完成或取消写入，再读取机器密钥。"
+            state["modal"] = "operation-failed"
+            pushState()
+            return
+        }
+        let alert = UIAlertController(
+            title: "读取机器密钥",
+            message: "将向仪表发送一条只读指令（index 0x13，请求 40 字节），"
+                + "读取它用来解密下载皮肤包的机器密钥料。\n\n"
+                + "不写入任何寄存器。请只对自己的车辆使用。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in self.pushState() })
+        alert.addAction(UIAlertAction(title: "读取", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.state["busyMessage"] = "正在读取机器密钥…"
+            self.state["modal"] = NSNull()
+            self.pushState()
+            self.startClient(record: self.placeholderRecord(serial: self.serial),
+                             operation: .readClusterSecretKey)
+        })
+        presentAlert(alert)
+    }
+
+    /// Splits the key hex into 16-byte lines so the dialog stays readable.
+    ///
+    /// 40 bytes is 80 hex characters: one wrapped paragraph would be unreadable
+    /// and impossible to copy from a screenshot, which is how this value is
+    /// actually moved to a workstation.
+    static func formattedSecretKey(_ hex: String) -> String {
+        guard !hex.isEmpty else { return "" }
+        var lines: [String] = []
+        var index = hex.startIndex
+        var offset = 0
+        while index < hex.endIndex {
+            let end = hex.index(index, offsetBy: 32, limitedBy: hex.endIndex) ?? hex.endIndex
+            lines.append(String(format: "%03d  %@", offset, String(hex[index..<end])))
+            index = end
+            offset += 16
+        }
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Capacity sweep
@@ -1832,6 +1896,21 @@ extension PrototypeCoordinator: BfgBleClient.Listener {
         }
         state["pairScanning"] = false
         stopScanCountdown()
+
+        // The machine-key read is its own terminus: it produces one value and no
+        // vehicle state, so it must not fall through into the read/write result
+        // handling below, which would relabel the connection as freshly read and
+        // overwrite the page's cached figures from a result that never read them.
+        if activeOperation == .readClusterSecretKey {
+            state["busyMessage"] = NSNull()
+            let key = result.clusterSecretKeyHex
+            state["secretKeyText"] = key.isEmpty
+                ? "车辆没有返回数据。"
+                : "共 \(key.count / 2) 字节\n\n" + Self.formattedSecretKey(key)
+            state["modal"] = "secret-key"
+            pushState()
+            return
+        }
 
         if activeOperation == .discoverVehicles {
             state["vehicles"] = result.discoveredVehicles.map {

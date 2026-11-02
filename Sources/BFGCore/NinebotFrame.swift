@@ -44,6 +44,17 @@ public enum NinebotFrame {
     public static let readDisRemainingCapacity = Hex.literal("5AA5013E01014402")
     public static let readDisConfig = Hex.literal("5AA5013E01019202")
 
+    /// Reads the cluster's 40-byte machine-key material (`index 0x13`).
+    ///
+    /// The trailing `0x28` is a *requested length*, not part of the register
+    /// address, and it is load-bearing: the receiver refuses this read unless it
+    /// is exactly 40 — `get_cluster_secret_key` logs `reason:%d` and returns —
+    /// so an ordinary 2-byte read of the same index reaches nothing.
+    ///
+    /// Read-only: no counterpart write frame exists. The reply arrives as
+    /// `CMD 0x04` with the index echoed, which is what `requireReadAck` matches.
+    public static let readClusterSecretKey = Hex.literal("5AA5013E01011328")
+
     /// `SET_PWD` header; the 32-byte password follows.
     public static let setPasswordHeader = Hex.literal("5AA5203E045C00")
     /// `AUTH` header; the 14-byte serial follows.

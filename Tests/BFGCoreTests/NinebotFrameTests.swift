@@ -19,6 +19,19 @@ final class NinebotFrameTests: XCTestCase {
                        NinebotFrame.readBfgWord(register: 0x1C))
     }
 
+    /// The machine-key read is an ordinary read frame whose *data* byte is the
+    /// requested length. Both halves matter: index 0x13 with any other length is
+    /// refused by the receiver, so a frame that looked plausible but asked for
+    /// two bytes would fail on hardware while passing a looser expectation.
+    func testReadClusterSecretKeyFrame() {
+        let frame = NinebotFrame.readClusterSecretKey
+        XCTAssertEqual([0x5A, 0xA5, 0x01, 0x3E, 0x01, 0x01, 0x13, 0x28], frame)
+        XCTAssertEqual(1, frame[2], "LEN 覆盖的是数据段长度")
+        XCTAssertEqual(0x01, frame[5], "读请求的 CMD 必须是 0x01")
+        XCTAssertEqual(0x13, frame[6], "index 必须是 0x13")
+        XCTAssertEqual(40, frame[7], "长度字节必须是 40，否则仪表拒绝这次读取")
+    }
+
     func testAuthenticateFrameCarriesSerial() throws {
         let serial = Array("ABCD1234EFGH56".utf8)
         let frame = try NinebotFrame.authenticate(serial14: serial)

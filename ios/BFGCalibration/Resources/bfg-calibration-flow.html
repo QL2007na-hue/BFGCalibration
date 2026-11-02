@@ -624,6 +624,11 @@ globalThis.lucide = {createIcons() {
           </div>
           <div class="nb-tip">${icon('info')}<span>普通连接遇到认证无回复时，可选择临时密钥配对，不会自动覆盖原凭据。</span></div>
         </section>
+        <section class="nb-section">
+          <div class="nb-section-head"><h3 class="nb-section-title">诊断（只读）</h3><p class="nb-section-note">不发送写入</p></div>
+          <button class="nb-secondary" type="button" data-action="read-secret-key">读取机器密钥（index 0x13）</button>
+          <div class="nb-tip">${icon('info')}<span>发送 5A A5 01 3E 01 01 13 28，读取仪表 40 字节机器密钥料。长度字节必须是 0x28，否则仪表会拒绝这次读取。</span></div>
+        </section>
       </main>
       ${bottomNav('home')}
     </div>`;
@@ -953,6 +958,18 @@ globalThis.lucide = {createIcons() {
     </div></div>`;
   }
 
+  /// The 40-byte machine-key read. The native side hands over pre-formatted hex,
+  /// so the dialog needs no parsing of its own — the page only lays it out.
+  function secretKeyModal() {
+    return `<div class="nb-modal-layer" role="dialog" aria-modal="true" aria-label="机器密钥"><div class="nb-modal">
+      <div class="nb-modal-icon">${icon('key-round')}</div>
+      <h3>机器密钥</h3>
+      <p class="nb-label">仪表用这份 40 字节密钥料解密下载的皮肤包；其中第 24~40 字节（16 字节）是实际的解密密钥。</p>
+      <p class="nb-label" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:40vh;overflow-y:auto;text-align:left;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${esc(state.secretKeyText || '')}</p>
+      <div class="nb-btn-row"><button type="button" class="nb-primary" data-action="close-modal">关闭</button></div>
+    </div></div>`;
+  }
+
   function missingVehicleModal() {
     return `<div class="nb-modal-layer" role="dialog" aria-modal="true" aria-label="未找到车辆"><div class="nb-modal">
       <div class="nb-modal-icon">${icon('bike')}</div>
@@ -1075,7 +1092,7 @@ globalThis.lucide = {createIcons() {
     const visualKey = `${state.screen}|${state.modal || ''}`;
     const screenChanged = visualKey !== lastVisualKey;
     lastVisualKey = visualKey;
-    screen.innerHTML = `<div class="nb-page-wrap">${html}${state.modal === 'wake' ? wakeModal() : state.modal === 'write-confirm' ? writeConfirmModal() : state.modal === 'write-gate' ? writeGateModal() : state.modal === 'dashboard-requirements' ? dashboardRequirementsModal() : state.modal === 'missing-vehicle' ? missingVehicleModal() : state.modal === 'license' ? licenseModal() : statusModal()}</div>`;
+    screen.innerHTML = `<div class="nb-page-wrap">${html}${state.modal === 'wake' ? wakeModal() : state.modal === 'write-confirm' ? writeConfirmModal() : state.modal === 'write-gate' ? writeGateModal() : state.modal === 'dashboard-requirements' ? dashboardRequirementsModal() : state.modal === 'missing-vehicle' ? missingVehicleModal() : state.modal === 'license' ? licenseModal() : state.modal === 'secret-key' ? secretKeyModal() : statusModal()}</div>`;
     if (!screenChanged) {
       // 同页更新：新节点上不要重放动画，让数值自己变就好
       screen.querySelectorAll('.nb-page, .nb-content > *, .nb-info-row')

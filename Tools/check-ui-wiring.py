@@ -84,7 +84,7 @@ def part1_contract_diff(html, swift):
     native_modals = set(re.findall(r'state\["modal"\] = "([a-z-]+)"', swift))
     page_modals = set(re.findall(r"'([a-z-]+)': \[", html))
     custom_modals = {"wake", "write-confirm", "write-gate", "dashboard-requirements",
-                     "missing-vehicle", "license"}
+                     "missing-vehicle", "license", "secret-key"}
     missing = sorted(native_modals - page_modals - custom_modals)
     if missing:
         fail("原生会弹出、但页面没有定义的弹窗：" + ", ".join(missing))

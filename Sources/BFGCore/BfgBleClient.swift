@@ -61,6 +61,18 @@ public final class BfgBleClient: NSObject {
         /// it stores a rated capacity of its own — rather than reading it back from
         /// the meter each time — it is in one of the other 248.
         case dashboardScan
+        /// Reads the cluster's 40-byte machine-key material, read-only.
+        ///
+        /// Separate from `.dashboardProbe` because it is a different question
+        /// about the same module: not "what does this register say", but "what
+        /// key does this unit encrypt its downloaded skin packs with". The frame
+        /// is a normal read (`CMD 0x01`) whose data byte asks for 40 bytes at
+        /// index 0x13; the reply is a `CMD 0x04` ack like any other read.
+        ///
+        /// Nothing here writes, and the key is only ever shown to the user — it
+        /// is never persisted, never logged as anything but its raw hex, and no
+        /// other operation consumes it.
+        case readClusterSecretKey
     }
 
     public protocol Listener: AnyObject {
@@ -140,6 +152,14 @@ public final class BfgBleClient: NSObject {
         public var capacityRatedBefore = -1
         public var capacityRatedAfter = -1
 
+        /// Raw hex of the 40-byte machine-key material returned by
+        /// `.readClusterSecretKey`. Empty when that operation did not run.
+        ///
+        /// Kept as hex rather than `[UInt8]` because its only consumer is the
+        /// dialog that shows it: the tool never uses the key itself, so there is
+        /// no reason to give it a byte-array lifetime it would have to manage.
+        public var clusterSecretKeyHex = ""
+
         /// Android substitutes the scanned capacity for the raw 0x1C reading when
         /// the vehicle only resolved in compatibility mode. An unsupported
         /// combination reports no capacity rather than a misleading raw value.
@@ -199,6 +219,8 @@ public final class BfgBleClient: NSObject {
         case probePreRead, probeWrite, probeVerify
         case sweepPreRead, sweepTryWrite, sweepVerify, sweepRestore, sweepRestoreVerify
         case dashboardProbe, waitDashboardScan
+        /// Waiting for the `index 0x13` read that carries the machine-key material.
+        case waitClusterSecretKey
         case done
     }
 
@@ -753,7 +775,7 @@ public final class BfgBleClient: NSObject {
                  .waitCapacityPreRead, .waitCapacityWriteAck, .waitAfterCapacityWrite, .watchCapacity,
                  .probePreRead, .probeWrite, .probeVerify,
                  .sweepPreRead, .sweepTryWrite, .sweepVerify, .sweepRestore, .sweepRestoreVerify,
-                 .dashboardProbe, .waitDashboardScan:
+                 .dashboardProbe, .waitDashboardScan, .waitClusterSecretKey:
                 try handleSessionReply(encrypted)
             default:
                 break
@@ -921,6 +943,16 @@ public final class BfgBleClient: NSObject {
                 result.registerScanModule = registerScanModule
                 registerScanIndex = RegisterReadPlan.first
                 requestRegisterScan()
+                return
+            }
+            if operation == .readClusterSecretKey {
+                // Like the sweeps above: authenticated, but with no interest in
+                // the vehicle's profile or capacity. Asking for those first would
+                // make this read fail on a vehicle that answers the key read but
+                // not the parameter chain.
+                state = .waitClusterSecretKey
+                send(NinebotFrame.readClusterSecretKey)
+                timeout(.waitClusterSecretKey, 5, "读取机器密钥无回复")
                 return
             }
             status("认证完成；开始读取车辆参数…")
@@ -1298,6 +1330,23 @@ public final class BfgBleClient: NSObject {
                 + " data=\(payload) value=\(value)")
             clearTimeout()
             advanceRegisterScan()
+
+        case .waitClusterSecretKey:
+            // 40 requested bytes, so the ack must carry 7 header bytes plus 40 of
+            // data. A short reply is not "a key with a few bytes missing" — it is
+            // a different answer entirely, so it must not be shown as one.
+            let keyLength = 40
+            let index = try requireReadAck(plain, src: NinebotFrame.dstDashboard,
+                                           len: 7 + keyLength)
+            guard index == 0x13, plain.count >= 7 + keyLength else { return }
+            clearTimeout()
+            let key = Array(plain[7..<(7 + keyLength)])
+            result.clusterSecretKeyHex = Hex.encode(key)
+            // Logged as raw hex only. The dialog is the intended viewer; a log
+            // line is here so an exported diagnostic still shows that the read
+            // happened and what came back.
+            log("CLUSTER_SECRET_KEY length=\(key.count) data=\(result.clusterSecretKeyHex)")
+            finish("已读取 40 字节机器密钥料。")
 
         default:
             break
